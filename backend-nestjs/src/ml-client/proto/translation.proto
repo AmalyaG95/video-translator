@@ -1,0 +1,124 @@
+syntax = "proto3";
+
+package translation;
+
+service TranslationService {
+  rpc TranslateVideo (TranslationRequest) returns (stream TranslationProgress);
+  rpc GetTranslationResult (ResultRequest) returns (TranslationResult);
+  rpc CancelTranslation (CancelRequest) returns (CancelResponse);
+  rpc ControlTranslation (ControlTranslationRequest) returns (ControlTranslationResponse);
+  rpc DetectLanguage (LanguageDetectionRequest) returns (LanguageDetectionResult);
+  rpc GetAIInsights (AIInsightsRequest) returns (AIInsightsResponse);
+}
+
+message TranslationRequest {
+  string session_id = 1;
+  string file_path = 2;
+  string source_lang = 3;
+  string target_lang = 4;
+}
+
+message TranslationProgress {
+  string session_id = 1;
+  double progress = 2;
+  string current_step = 3;
+  string status = 4;
+  string message = 5;
+  bool early_preview_available = 6;
+  string early_preview_path = 7;
+  // Enhanced fields for processing dashboard
+  int32 eta_seconds = 8;
+  HardwareInfo hardware_info = 9;
+  repeated string available_segment_ids = 10;
+  double chunks_per_minute = 11;
+  int32 current_chunk = 12;
+  int32 total_chunks = 13;
+}
+
+message ResultRequest {
+  string session_id = 1;
+}
+
+message QualityMetrics {
+  double lip_sync_accuracy = 1;
+  double voice_quality = 2;
+  double translation_quality = 3;
+  bool duration_match = 4;
+  double avg_lufs = 5;
+  double avg_atempo = 6;
+  int32 segments_condensed = 7;
+}
+
+message TranslationResult {
+  string session_id = 1;
+  string output_path = 2;
+  string status = 3;
+  double duration = 4;
+  string original_srt = 5;
+  string translated_srt = 6;
+  QualityMetrics quality_metrics = 7;
+  int64 output_size = 8;
+  int64 original_size = 9;
+  double processing_time_seconds = 10;
+}
+
+message HardwareInfo {
+  string cpu = 1;
+  string gpu = 2;
+  int32 vram_gb = 3;
+  int32 ram_gb = 4;
+}
+
+message CancelRequest {
+  string session_id = 1;
+}
+
+message CancelResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ControlTranslationRequest {
+  string session_id = 1;
+  string action = 2; // "pause", "resume", "cancel"
+}
+
+message ControlTranslationResponse {
+  bool success = 1;
+  bool is_paused = 2;
+  string message = 3;
+}
+
+message LanguageDetectionRequest {
+  string file_path = 1;
+}
+
+message LanguageDetectionResult {
+  string detected_language = 1;
+  double confidence = 2;
+  bool success = 3;
+  string message = 4;
+}
+
+message AIInsightsRequest {
+  string session_id = 1;
+}
+
+message AIInsight {
+  string id = 1;
+  string type = 2;
+  string title = 3;
+  string description = 4;
+  string impact = 5;
+  string timestamp = 6;
+  string data = 7; // JSON string
+}
+
+message AIInsightsResponse {
+  string session_id = 1;
+  repeated AIInsight insights = 2;
+  int32 total_insights = 3;
+  bool success = 4;
+  string message = 5;
+}
+

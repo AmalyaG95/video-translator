@@ -1,0 +1,184 @@
+# Video Translator Configuration
+# Single YAML configuration file as required
+
+# Application Settings
+app:
+  name: "Video Translator"
+  version: "1.0.0"
+  debug: false
+  temp_dir: "temp_work"
+  artifacts_dir: "artifacts"
+
+# Server Configuration
+server:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 1
+
+# Video Processing
+video:
+  max_duration_hours: 15
+  min_duration_seconds: 1
+  supported_formats: ["mp4", "avi", "mov", "mkv", "webm"]
+  temp_format: "mp4"
+  output_format: "mp4"
+
+# Audio Processing
+audio:
+  sample_rate: 16000
+  channels: 1
+  bit_depth: 16
+  lufs_target: -23.0
+  peak_target: -1.0
+  silence_threshold: -40.0
+
+# STT Configuration (faster-whisper)
+stt:
+  model_size: "base"
+  device: "cuda" # Use GPU when available, fallback to CPU
+  compute_type: "int8" # Efficient on CPU, works with GPU fallback
+  language: "en"
+  vad_filter: true
+  min_silence_duration_ms: 500
+  min_segment_duration: 0.5
+  enable_speaker_diarization: true
+  enable_gender_detection: true
+
+# Enhanced Processing
+enhanced:
+  chunk_size_minutes: 10
+  max_video_duration_hours: 15
+  enable_multi_voice: true
+  voice_matching: true
+  memory_optimization: true
+  enable_speed_matching: true
+  speed_adjustment_range: [0.5, 2.0] # Min and max speed multipliers
+  language_speed_adjustments:
+    en: 1.0 # English baseline
+    es: 1.1 # Spanish typically faster
+    fr: 0.9 # French typically slower
+    de: 0.95 # German slightly slower
+    hy: 1.05 # Armenian slightly faster
+    it: 1.15 # Italian faster
+    ru: 0.9 # Russian slower
+    zh: 1.2 # Chinese faster
+    ja: 1.1 # Japanese faster
+
+# Translation Configuration (Helsinki-NLP)
+translation:
+  model_prefix: "Helsinki-NLP/opus-mt"
+  max_length: 256
+  batch_size: 1
+  condensation_threshold: 1.2 # Max 1.2x original length
+  num_beams: 6
+  temperature: 0.6
+  top_p: 0.9
+  repetition_penalty: 1.1
+
+  # Multi-model translation settings
+  multi_model:
+    enabled: true
+    helsinki_alternative:
+      enabled: true # Always use alternative Helsinki-NLP parameters
+    google_translate:
+      enabled: false # Set to true if you have Google Cloud credentials
+      credentials_path: null # Path to service account JSON file
+    microsoft_translate:
+      enabled: false # Set to true if you have Microsoft Translator API key
+      api_key: null
+
+# TTS Configuration (Edge-TTS)
+tts:
+  provider: "edge-tts"
+  voices:
+    en:
+      male: "en-US-GuyNeural"
+      female: "en-US-AriaNeural"
+      default: "en-US-AriaNeural"
+    es:
+      male: "es-ES-AlvaroNeural"
+      female: "es-ES-ElviraNeural"
+      default: "es-ES-ElviraNeural"
+    fr:
+      male: "fr-FR-HenriNeural"
+      female: "fr-FR-DeniseNeural"
+      default: "fr-FR-DeniseNeural"
+    de:
+      male: "de-DE-ConradNeural"
+      female: "de-DE-KatjaNeural"
+      default: "de-DE-KatjaNeural"
+    hy: # Armenian
+      male: "hy-AM-HaykNeural"
+      female: "hy-AM-AnahitNeural"
+      default: "hy-AM-AnahitNeural"
+    ru: # Russian
+      male: "ru-RU-DmitryNeural"
+      female: "ru-RU-SvetlanaNeural"
+      default: "ru-RU-SvetlanaNeural"
+  sample_rate: 16000
+  bit_rate: "128k"
+  voice_quality: "high"
+
+# Quality Requirements
+quality:
+  lip_sync_accuracy_ms: 150 # ±100-200ms segment-level
+  duration_fidelity_frames: 1 # Exact match within 1 frame
+  max_segment_ratio: 1.2 # No segment exceeds 1.2x original
+  voice_quality_min: 0.8 # Minimum voice quality score
+  translation_accuracy_min: 0.85 # Minimum translation accuracy
+
+# Performance Settings
+performance:
+  max_workers: 8 # More workers for GPU
+  memory_limit_gb: 16 # Increase for GPU
+  disk_cleanup_interval: 300 # seconds
+  progress_update_interval: 0.5 # seconds
+
+# Retry Configuration
+retry:
+  max_retries: 2
+  backoff_factor: 2.0
+  ffmpeg_retries: 2
+  ffmpeg_backoff: 1.5
+  model_retries: 2
+  model_backoff: 2.0
+  network_retries: 2
+  network_backoff: 2.0
+
+# AI Orchestrator Configuration (DISABLED)
+ai_orchestrator:
+  enabled: false
+  llama_model_path: "models/llama-2-7b-chat.gguf"
+  llama_server_url: "http://localhost:8080"
+  max_chunk_length: 100
+  min_chunk_length: 20
+  temperature: 0.3
+  max_tokens: 500
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  structured: true
+  file: "artifacts/logs.jsonl"
+  max_file_size_mb: 100
+  backup_count: 5
+
+# Hardware Detection
+hardware:
+  auto_detect: true
+  gpu_enabled: true # Enable GPU acceleration
+  cpu_optimization: true
+
+# Security & Privacy
+security:
+  local_processing_only: true
+  temp_file_cleanup: true
+  data_retention_hours: 24
+
+# Testing Configuration
+testing:
+  unit_test_timeout: 30
+  integration_test_timeout: 300
+  test_video_duration: 30 # seconds for integration test
+  sample_check_duration: 30 # seconds for sample check
+

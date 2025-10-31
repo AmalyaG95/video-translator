@@ -1,0 +1,81 @@
+version: "3.8"
+
+services:
+  # Frontend - Next.js
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://nestjs-api:3001
+    depends_on:
+      - nestjs-api
+    networks:
+      - translator-network
+    restart: unless-stopped
+
+  # NestJS API Gateway
+  nestjs-api:
+    build:
+      context: ./backend-nestjs
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - FRONTEND_URL=http://frontend:3000
+      - GRPC_ML_SERVICE_URL=python-ml:50051
+      - NODE_ENV=production
+    volumes:
+      - ./uploads:/app/uploads
+      - ./artifacts:/app/artifacts
+    depends_on:
+      - python-ml
+    networks:
+      - translator-network
+    restart: unless-stopped
+
+  # Python ML Microservice
+  python-ml:
+    build:
+      context: ./backend-python-ml
+      dockerfile: Dockerfile
+    ports:
+      - "50051:50051"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./artifacts:/app/artifacts
+      - ./backend-python-ml/src/config:/app/src/config
+      - temp-work:/app/temp_work
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: "4"
+        reservations:
+          memory: 4G
+          cpus: "2"
+    networks:
+      - translator-network
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import grpc; grpc.insecure_channel('localhost:50051')",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  translator-network:
+    driver: bridge
+
+volumes:
+  temp-work:
+    driver: local

@@ -1,0 +1,56 @@
+{
+  "name": "video-translator",
+  "version": "1.0.0",
+  "description": "Standard Video Translator with high-quality lip-sync and voice preservation",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:next\" \"npm run dev:electron\"",
+    "dev:next": "cd frontend && npm run dev",
+    "dev:electron": "wait-on http://localhost:3000 && NODE_ENV=development SKIP_BACKEND=true electron .",
+    "dev:electron:docker": "wait-on http://localhost:3000 && NODE_ENV=development SKIP_BACKEND=true electron .",
+    "dev:electron:full": "./run-electron-dev.sh",
+    "build": "cd frontend && npm run build",
+    "build:electron": "electron-builder",
+    "start": "electron .",
+    "setup": "npm install && cd frontend && npm install && cd ../backend-python-ml && python3 -m venv venv && source venv/bin/activate && pip install -r requirements-dev.txt",
+    "run": "npm run dev",
+    "test": "cd backend-python-ml && python -m pytest tests/",
+    "package": "npm run build && npm run build:electron"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "electron": "^28.0.0",
+    "electron-builder": "^24.6.4",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.video.translator",
+    "productName": "Video Translator",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "frontend/.next/**/*",
+      "backend-nestjs/dist/**/*",
+      "backend-python-ml/src/**/*",
+      "backend-python-ml/requirements.txt",
+      "!backend-python-ml/__pycache__/**/*",
+      "!backend-python-ml/tests/**/*",
+      "!backend-python-ml/artifacts/**/*",
+      "!backend-python-ml/venv/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.video",
+      "icon": "electron/assets/logo.png"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "electron/assets/logo.png"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "electron/assets/logo.png"
+    }
+  }
+}

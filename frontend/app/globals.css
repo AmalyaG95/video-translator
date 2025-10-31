@@ -1,0 +1,534 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Video Preview Modal Slider Styles */
+.slider {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.slider::-webkit-slider-track {
+  background: #4b5563;
+  height: 4px;
+  border-radius: 2px;
+}
+
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  background: #ffffff;
+  height: 16px;
+  width: 16px;
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.slider::-webkit-slider-thumb:hover {
+  background: #f3f4f6;
+  transform: scale(1.1);
+}
+
+.slider::-moz-range-track {
+  background: #4b5563;
+  height: 4px;
+  border-radius: 2px;
+  border: none;
+}
+
+.slider::-moz-range-thumb {
+  background: #ffffff;
+  height: 16px;
+  width: 16px;
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.slider::-moz-range-thumb:hover {
+  background: #f3f4f6;
+  transform: scale(1.1);
+}
+
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap");
+
+:root {
+  --foreground-rgb: 0, 0, 0;
+  --background-start-rgb: 214, 219, 220;
+  --background-end-rgb: 255, 255, 255;
+  --primary: 59, 130, 246;
+  --primary-dark: 37, 99, 235;
+  --secondary: 16, 185, 129;
+  --accent: 168, 85, 247;
+  --danger: 239, 68, 68;
+  --warning: 245, 158, 11;
+  --success: 34, 197, 94;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --foreground-rgb: 255, 255, 255;
+    --background-start-rgb: 0, 0, 0;
+    --background-end-rgb: 0, 0, 0;
+  }
+}
+
+* {
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+}
+
+html,
+body {
+  max-width: 100vw;
+  overflow-x: hidden;
+  font-family: "Inter", sans-serif;
+}
+
+body {
+  color: rgb(var(--foreground-rgb));
+  background: linear-gradient(
+      to bottom,
+      transparent,
+      rgb(var(--background-end-rgb))
+    )
+    rgb(var(--background-start-rgb));
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  html {
+    color-scheme: dark;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
+/* Dark mode scrollbar */
+@media (prefers-color-scheme: dark) {
+  ::-webkit-scrollbar-track {
+    background: #2a2a2a;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #555;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #777;
+  }
+}
+
+/* Custom animations */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.5s ease-out;
+}
+
+.animate-slide-in {
+  animation: slideIn 0.3s ease-out;
+}
+
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+/* Gradient backgrounds */
+.gradient-primary {
+  background: linear-gradient(135deg, rgb(59, 130, 246), rgb(37, 99, 235));
+}
+
+.gradient-secondary {
+  background: linear-gradient(135deg, rgb(16, 185, 129), rgb(5, 150, 105));
+}
+
+.gradient-accent {
+  background: linear-gradient(135deg, rgb(168, 85, 247), rgb(147, 51, 234));
+}
+
+.gradient-danger {
+  background: linear-gradient(135deg, rgb(239, 68, 68), rgb(220, 38, 38));
+}
+
+/* Glass morphism effect */
+.glass {
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.glass-dark {
+  background: rgba(0, 0, 0, 0.1);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Custom button styles */
+.btn-primary {
+  @apply rounded-lg bg-blue-600 px-4 py-2 font-medium text-white transition-colors duration-200 hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+.btn-secondary {
+  @apply rounded-lg bg-gray-200 px-4 py-2 font-medium text-gray-800 transition-colors duration-200 hover:bg-gray-300 disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+.btn-success {
+  @apply rounded-lg bg-green-600 px-4 py-2 font-medium text-white transition-colors duration-200 hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+.btn-danger {
+  @apply rounded-lg bg-red-600 px-4 py-2 font-medium text-white transition-colors duration-200 hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+/* Card styles */
+.card {
+  @apply rounded-xl border border-gray-200 bg-white p-6 shadow-lg dark:border-gray-700 dark:bg-gray-800;
+}
+
+.card-hover {
+  @apply card transition-shadow duration-300 hover:shadow-xl;
+}
+
+/* Input styles */
+.input {
+  @apply w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder-gray-500 focus:border-transparent focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:placeholder-gray-400;
+}
+
+/* Progress bar */
+.progress-bar {
+  @apply h-2 w-full rounded-full bg-gray-200 dark:bg-gray-700;
+}
+
+.progress-fill {
+  @apply h-2 rounded-full bg-blue-600 transition-all duration-300 ease-out;
+}
+
+/* Status indicators */
+.status-dot {
+  @apply h-3 w-3 rounded-full;
+}
+
+.status-online {
+  @apply bg-green-500;
+}
+
+.status-processing {
+  @apply animate-pulse bg-yellow-500;
+}
+
+.status-error {
+  @apply bg-red-500;
+}
+
+.status-offline {
+  @apply bg-gray-400;
+}
+
+/* Loading spinner */
+.spinner {
+  @apply animate-spin rounded-full border-2 border-gray-300 border-t-blue-600;
+}
+
+/* File drop zone */
+.dropzone {
+  @apply cursor-pointer rounded-lg border-2 border-dashed border-gray-300 p-8 text-center transition-colors duration-200 hover:border-blue-500 dark:border-gray-600 dark:hover:border-blue-400;
+}
+
+.dropzone-active {
+  @apply border-blue-500 bg-blue-50 dark:bg-blue-900/20;
+}
+
+/* Video player container */
+.video-container {
+  @apply relative w-full overflow-hidden rounded-lg bg-black;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px; /* Fallback minimum height */
+}
+
+/* Only apply fixed aspect ratio if no inline style aspect-ratio is set */
+.video-container:not([style*="aspect-ratio"])::before {
+  content: "";
+  display: block;
+  padding-top: 56.25%; /* 16:9 aspect ratio fallback */
+}
+
+.video-container[style*="aspect-ratio"]::before {
+  display: none; /* Hide ::before when we have dynamic aspect ratio */
+}
+
+.video-container video {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain; /* Show full video without cropping */
+  display: block;
+}
+
+/* When aspect ratio is set via style, container matches video exactly */
+.video-container[style*="aspect-ratio"] {
+  position: relative;
+}
+
+.video-container[style*="aspect-ratio"] video {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain; /* With matching aspect ratio, no black bars needed */
+}
+
+/* Fullscreen styles */
+.video-container:fullscreen {
+  @apply h-full w-full bg-black;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.video-container:fullscreen::before {
+  display: none;
+}
+
+.video-container:fullscreen video {
+  @apply relative h-full w-full object-contain;
+  position: relative;
+  top: auto;
+  left: auto;
+}
+
+/* Browser-specific fullscreen pseudo-classes */
+.video-container:-webkit-full-screen {
+  @apply h-full w-full bg-black;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.video-container:-webkit-full-screen::before {
+  display: none;
+}
+
+.video-container:-webkit-full-screen video {
+  @apply relative h-full w-full object-contain;
+  position: relative;
+  top: auto;
+  left: auto;
+}
+
+.video-container:-moz-full-screen {
+  @apply h-full w-full bg-black;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.video-container:-moz-full-screen::before {
+  display: none;
+}
+
+.video-container:-moz-full-screen video {
+  @apply relative h-full w-full object-contain;
+  position: relative;
+  top: auto;
+  left: auto;
+}
+
+.video-container:-ms-fullscreen {
+  @apply h-full w-full bg-black;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.video-container:-ms-fullscreen::before {
+  display: none;
+}
+
+.video-container:-ms-fullscreen video {
+  @apply relative h-full w-full object-contain;
+  position: relative;
+  top: auto;
+  left: auto;
+}
+
+/* Video progress bar slider positioning */
+.video-progress-slider {
+  position: relative;
+  height: 4px;
+}
+
+/* Webkit browsers (Chrome, Safari, Edge) */
+.video-progress-slider::-webkit-slider-runnable-track {
+  background: transparent;
+  height: 4px;
+  width: 100%;
+}
+
+.video-progress-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: rgb(59 130 246);
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.3);
+  margin-top: -4px;
+  position: relative;
+}
+
+/* Firefox */
+.video-progress-slider::-moz-range-track {
+  background: transparent;
+  height: 4px;
+  border: none;
+  width: 100%;
+}
+
+.video-progress-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: rgb(59 130 246);
+  border: none;
+  cursor: pointer;
+  margin-top: -4px;
+}
+
+/* Responsive grid */
+.grid-responsive {
+  @apply grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4;
+}
+
+/* Text gradients */
+.text-gradient {
+  @apply bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent;
+}
+
+.text-gradient-success {
+  @apply bg-gradient-to-r from-green-600 to-emerald-600 bg-clip-text text-transparent;
+}
+
+.text-gradient-danger {
+  @apply bg-gradient-to-r from-red-600 to-pink-600 bg-clip-text text-transparent;
+}
+
+/* Custom focus styles */
+.focus-ring {
+  @apply focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800;
+}
+
+/* Utility classes */
+.text-balance {
+  text-wrap: balance;
+}
+
+.text-pretty {
+  text-wrap: pretty;
+}
+
+/* Video subtitle/cue styling */
+video::cue {
+  background-color: rgba(0, 0, 0, 0.85) !important;
+  color: #ffffff !important;
+  font-size: 20px !important;
+  font-weight: 500 !important;
+  padding: 8px 12px !important;
+  border-radius: 6px !important;
+  line-height: 1.5 !important;
+  text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8) !important;
+  font-family: 'Inter', sans-serif !important;
+  white-space: pre-wrap !important;
+}
+
+/* Dark mode subtitle styling */
+@media (prefers-color-scheme: dark) {
+  video::cue {
+    background-color: rgba(0, 0, 0, 0.9) !important;
+    color: #ffffff !important;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 1) !important;
+  }
+}
+
+/* Print styles */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+}
