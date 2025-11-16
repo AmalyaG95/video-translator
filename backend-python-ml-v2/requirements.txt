@@ -1,0 +1,68 @@
+# Core dependencies
+grpcio>=1.66.0
+grpcio-tools>=1.66.0
+protobuf>=5.27.0
+grpcio-reflection>=1.66.0
+
+# NumPy must be <2.0 for compatibility with PyTorch
+numpy>=1.26.0,<2.0
+
+# Audio/Video processing
+av>=13.0.0
+faster-whisper>=1.0.4
+pydub==0.25.1
+pyloudnorm>=0.1.1
+scipy>=1.13.0
+webrtcvad>=2.0.10
+librosa>=0.10.2
+soundfile>=0.12.1
+resampy>=0.4.2
+
+# ML/AI
+transformers>=4.45.0
+torch>=2.3.0
+torchaudio>=2.3.0
+sentencepiece>=0.1.99
+sacremoses>=0.0.53
+# NLLB (No Language Left Behind) - Meta's multilingual translation model
+# Note: NLLB models are available through transformers library (already included above)
+# Polyglot - Multilingual NLP library
+polyglot>=16.7.4
+pycld2>=0.41
+
+# TTS
+edge-tts>=7.2.3
+
+# NLP
+nltk>=3.8.2
+langdetect>=1.0.9
+rapidfuzz>=3.9.0
+python-Levenshtein>=0.23.0
+
+# Configuration & Utilities
+pyyaml>=6.0.2
+pydantic>=2.9.0
+pydantic-settings>=2.5.0
+
+# Async & I/O
+aiofiles>=24.1.0
+# Note: asyncio is built-in to Python 3.7+, no need to install
+
+# System monitoring
+psutil>=6.0.0
+
+# Observability (2025 best practices)
+opentelemetry-api>=1.25.0
+opentelemetry-sdk>=1.25.0
+opentelemetry-exporter-otlp-proto-grpc>=1.25.0
+opentelemetry-instrumentation-grpc>=0.45b0
+prometheus-client>=0.21.0
+
+# HTTP server (optional, for health checks)
+uvicorn[standard]>=0.30.0
+fastapi>=0.115.0
+
+# Optional: ONNX Runtime for model optimization
+onnxruntime>=1.19.0
+# onnxruntime-gpu>=1.19.0  # For GPU support
+

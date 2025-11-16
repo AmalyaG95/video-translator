@@ -7,7 +7,7 @@ const ALLOWED_VIDEO_TYPES = [
   "video/mov",
 ] as const;
 
-const MAX_FILE_SIZE = 500 * 1_024 * 1_024; // 500MB
+const MAX_FILE_SIZE = 100 * 1_024 * 1_024 * 1_024; // 100GB - supports 15+ hour videos
 const MIN_FILE_SIZE = 1024; // 1KB
 
 export type VideoValidationResult = {

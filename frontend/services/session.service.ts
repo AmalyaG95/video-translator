@@ -13,11 +13,15 @@ export class SessionService {
   }
 
   async getSessions(): Promise<ProcessingSession[]> {
-    const response = await apiClient.get<ProcessingSession[]>(
+    const response = await apiClient.get<{ sessions: ProcessingSession[] } | ProcessingSession[]>(
       API_ENDPOINTS.SESSIONS
     );
 
-    return response;
+    // Backend returns { sessions: [...] }, extract the array
+    if (Array.isArray(response)) {
+      return response;
+    }
+    return (response as { sessions: ProcessingSession[] }).sessions || [];
   }
 
   async getSessionProgress(sessionId: string): Promise<ProcessingSession> {

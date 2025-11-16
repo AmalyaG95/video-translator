@@ -23,12 +23,10 @@ export function LayoutContent({ children }: { children: React.ReactNode }) {
 
       <motion.main
         id="main-content"
-        className="flex-1 p-6 pb-20 pt-24"
+        className={`flex-1 p-6 pb-20 pt-24 transition-all duration-300 ease-in-out ${
+          sidebarOpen ? "ml-64" : "ml-0"
+        }`}
         tabIndex={-1}
-        animate={{
-          marginLeft: sidebarOpen ? "16rem" : "0rem",
-        }}
-        transition={{ duration: 0.3, ease: "easeInOut" }}
       >
         {children}
       </motion.main>

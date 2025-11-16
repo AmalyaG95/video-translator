@@ -23,6 +23,10 @@ async function bootstrap() {
   // Compression
   app.use(compression());
 
+  // Configure body parser for large file uploads (100GB limit)
+  app.use(require('express').json({ limit: '100gb' }));
+  app.use(require('express').urlencoded({ limit: '100gb', extended: true }));
+
   // CORS - allow both Docker internal and localhost access
   app.enableCors({
     origin: true, // Allow all origins for development

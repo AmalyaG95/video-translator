@@ -1,5 +1,9 @@
 FROM node:20-alpine AS builder
 
+# Accept build argument for API URL
+ARG NEXT_PUBLIC_API_URL=http://localhost:3001
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+
 # Set working directory
 WORKDIR /app
 

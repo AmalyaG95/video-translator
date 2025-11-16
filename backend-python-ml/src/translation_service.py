@@ -39,7 +39,15 @@ class TranslationServicer(translation_pb2_grpc.TranslationServiceServicer):
     ) -> Iterator[translation_pb2.TranslationProgress]:
         """Stream translation progress"""
         session_id = request.session_id
-        logger.info(f"Starting translation for session: {session_id}")
+        # FORCE OUTPUT - print always works
+        print(f"🌐🌐🌐 TranslateVideo CALLED - session: {session_id}", flush=True)
+        print(f"   Request received at gRPC level", flush=True)
+        print(f"   File path: {request.file_path}", flush=True)
+        print(f"   Languages: {request.source_lang} -> {request.target_lang}", flush=True)
+        logger.info(f"🌐 TranslateVideo CALLED - session: {session_id}")
+        logger.info(f"   Request received at gRPC level")
+        logger.info(f"   File path: {request.file_path}")
+        logger.info(f"   Languages: {request.source_lang} -> {request.target_lang}")
         
         # Create cancellation event and progress queue
         cancellation_event = asyncio.Event()
@@ -51,9 +59,15 @@ class TranslationServicer(translation_pb2_grpc.TranslationServiceServicer):
         
         async def run_pipeline():
             """Run pipeline in background task"""
+            print(f"🔵🔵🔵 run_pipeline ENTRY - session {session_id}", flush=True)
+            print(f"   Request details: file={request.file_path}, source={request.source_lang}, target={request.target_lang}", flush=True)
+            logger.info(f"🔵 run_pipeline ENTRY - session {session_id}")
+            logger.info(f"   Request details: file={request.file_path}, source={request.source_lang}, target={request.target_lang}")
             try:
-                logger.info(f"Starting pipeline for session {session_id}")
-                logger.info(f"File: {request.file_path}, {request.source_lang} -> {request.target_lang}")
+                print(f"✅✅✅ run_pipeline try block entered for session {session_id}", flush=True)
+                print(f"   Starting pipeline.process_video call...", flush=True)
+                logger.info(f"✅ run_pipeline try block entered for session {session_id}")
+                logger.info(f"   Starting pipeline.process_video call...")
                 
                 # Progress callback that puts updates in queue
                 async def progress_callback(progress: int, message: str, **kwargs):
@@ -77,6 +91,13 @@ class TranslationServicer(translation_pb2_grpc.TranslationServiceServicer):
                 output_path = session_artifacts['translated_video']
                 
                 # Run pipeline with callback
+                print(f"📞📞📞 CALLING pipeline.process_video - session {session_id}", flush=True)
+                print(f"   video_path: {request.file_path}", flush=True)
+                print(f"   output_path: {output_path}", flush=True)
+                logger.info(f"📞 CALLING pipeline.process_video - session {session_id}")
+                logger.info(f"   video_path: {request.file_path}")
+                logger.info(f"   output_path: {output_path}")
+                
                 result = await self.pipeline.process_video(
                     video_path=Path(request.file_path),
                     source_lang=request.source_lang,
@@ -85,6 +106,17 @@ class TranslationServicer(translation_pb2_grpc.TranslationServiceServicer):
                     session_id=session_id,
                     progress_callback=progress_callback
                 )
+                
+                print(f"📥📥📥 pipeline.process_video RETURNED - session {session_id}", flush=True)
+                print(f"   Result keys: {list(result.keys()) if result else 'None'}", flush=True)
+                print(f"   success: {result.get('success') if result else 'N/A'}", flush=True)
+                print(f"   segments_processed: {result.get('segments_processed', 'MISSING') if result else 'N/A'}", flush=True)
+                print(f"   error: {result.get('error', 'None') if result else 'N/A'}", flush=True)
+                logger.info(f"📥 pipeline.process_video RETURNED - session {session_id}")
+                logger.info(f"   Result keys: {list(result.keys()) if result else 'None'}")
+                logger.info(f"   success: {result.get('success') if result else 'N/A'}")
+                logger.info(f"   segments_processed: {result.get('segments_processed', 'MISSING') if result else 'N/A'}")
+                logger.info(f"   error: {result.get('error', 'None') if result else 'N/A'}")
                 
                 logger.info(f"Pipeline result: success={result.get('success')}, error={result.get('error')}")
                 if not result.get('success'):
@@ -102,14 +134,24 @@ class TranslationServicer(translation_pb2_grpc.TranslationServiceServicer):
                 return result
                 
             except Exception as e:
-                logger.error(f"Pipeline error: {e}", exc_info=True)
+                print(f"❌❌❌ CRITICAL ERROR in run_pipeline for session {session_id}: {e}", flush=True)
+                print(f"   Exception type: {type(e).__name__}", flush=True)
+                print(f"   Exception args: {e.args}", flush=True)
+                import traceback
+                print(traceback.format_exc(), flush=True)
+                logger.error(f"❌ CRITICAL ERROR in run_pipeline for session {session_id}: {e}", exc_info=True)
+                logger.error(f"   Exception type: {type(e).__name__}")
+                logger.error(f"   Exception args: {e.args}")
                 await progress_queue.put({'error': str(e)})
                 await progress_queue.put(DONE)
-                return {'success': False, 'error': str(e)}
+                return {'success': False, 'error': str(e), 'segments_processed': 0}
 
 
         # Start pipeline in background
+        print(f"🔥🔥🔥 Starting pipeline_task for session {session_id}", flush=True)
         pipeline_task = asyncio.create_task(run_pipeline())
+        print(f"   Task created: {pipeline_task}", flush=True)
+        print(f"   Task done: {pipeline_task.done()}, cancelled: {pipeline_task.cancelled()}", flush=True)
         
         try:
             # Initial progress
@@ -149,7 +191,14 @@ class TranslationServicer(translation_pb2_grpc.TranslationServiceServicer):
                     
                     # Calculate enhanced progress fields
                     current_progress = update.get('progress', 0)
-                    eta_seconds = self.calculate_eta(session_id, current_progress)
+                    initialization_eta = update.get('initialization_eta_seconds', 0)
+                    
+                    # Use initialization ETA if we're in initialization phase (0-5% progress)
+                    if current_progress <= 5 and initialization_eta > 0:
+                        eta_seconds = initialization_eta
+                    else:
+                        eta_seconds = self.calculate_eta(session_id, current_progress)
+                    
                     hardware_info = self.get_hardware_info()
                     available_segments = update.get('available_segments', [])
                     chunks_per_minute = update.get('chunks_per_minute', 0)
@@ -192,30 +241,69 @@ class TranslationServicer(translation_pb2_grpc.TranslationServiceServicer):
                 try:
                     pipeline_result = pipeline_task.result()
                     if pipeline_result and pipeline_result.get('success', False):
+                        # Extract actual segment counts from pipeline result
+                        segments_processed = pipeline_result.get('segments_processed', 0)
+                        
+                        # CRITICAL: Validate segments were actually processed
+                        if segments_processed == 0:
+                            logger.error(f"Pipeline marked as success but processed 0 segments for {session_id}")
+                            yield translation_pb2.TranslationProgress(
+                                session_id=session_id,
+                                status='failed',
+                                message='Translation failed: No segments were processed'
+                            )
+                            return
+                        
+                        # Use segments_processed as both current and total for completion
+                        final_current_chunk = segments_processed
+                        final_total_chunks = segments_processed
+                        
+                        logger.info(f"Final completion for {session_id}: {segments_processed} segments processed")
+                        
                         yield translation_pb2.TranslationProgress(
                             session_id=session_id,
                             progress=100,
                             current_step='Completed',
                             status='completed',
-                            message='Translation completed successfully'
+                            message='Translation completed successfully',
+                            current_chunk=final_current_chunk,
+                            total_chunks=final_total_chunks
                         )
                     else:
+                        # Pipeline returned success=False or None
+                        error_msg = pipeline_result.get('error', 'Translation failed during processing') if pipeline_result else 'Translation failed: No result returned'
+                        segments_processed = pipeline_result.get('segments_processed', 0) if pipeline_result else 0
+                        logger.error(f"Pipeline failed for {session_id}: {error_msg}, segments_processed={segments_processed}")
                         yield translation_pb2.TranslationProgress(
                             session_id=session_id,
                             status='failed',
-                            message='Translation failed during processing'
+                            message=error_msg,
+                            current_chunk=segments_processed,
+                            total_chunks=segments_processed
                         )
                 except Exception as e:
+                    logger.error(f"Exception getting pipeline result for {session_id}: {e}", exc_info=True)
                     yield translation_pb2.TranslationProgress(
                         session_id=session_id,
                         status='failed',
-                        message=f'Translation failed: {str(e)}'
+                        message=f'Translation failed: {str(e)}',
+                        current_chunk=0,
+                        total_chunks=0
                     )
             else:
+                # Pipeline task not done or was cancelled
+                if pipeline_task.cancelled():
+                    logger.warning(f"Pipeline task was cancelled for {session_id}")
+                    message = 'Translation was cancelled'
+                else:
+                    logger.error(f"Pipeline task not completed for {session_id} (done={pipeline_task.done()}, cancelled={pipeline_task.cancelled()})")
+                    message = 'Translation failed: Pipeline did not complete'
                 yield translation_pb2.TranslationProgress(
                     session_id=session_id,
                     status='failed',
-                    message='Translation was cancelled or failed'
+                    message=message,
+                    current_chunk=0,
+                    total_chunks=0
                 )
             
         except asyncio.CancelledError:
@@ -311,10 +399,14 @@ class TranslationServicer(translation_pb2_grpc.TranslationServiceServicer):
         context: grpc.aio.ServicerContext
     ) -> translation_pb2.LanguageDetectionResult:
         """Detect language from video file"""
-        file_path = request.file_path
-        logger.info(f"Detecting language for file: {file_path}")
+        file_path_str = request.file_path
+        logger.info(f"Detecting language for file: {file_path_str}")
         
         try:
+            # Convert string to Path object (detect_language expects Path)
+            from pathlib import Path
+            file_path = Path(file_path_str)
+            
             # Use the pipeline to detect language
             detected_language, confidence = await self.pipeline.detect_language(file_path)
             

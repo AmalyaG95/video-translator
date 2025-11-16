@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Brain,
@@ -38,26 +38,24 @@ export function AIReasoningPanel({
   const [filter, setFilter] = useState<FilterType>("all");
   const [filteredLogs, setFilteredLogs] = useState<AIReasoningLog[]>([]);
 
-  // Filter logs based on selected filter
-  useEffect(() => {
-    let filtered = logs;
-
+  // Filter logs based on selected filter - use useMemo to prevent infinite loops
+  const filteredLogsMemo = useMemo(() => {
     switch (filter) {
       case "decisions":
-        filtered = logs.filter(log => log.type === "decision");
-        break;
+        return logs.filter(log => log.type === "decision");
       case "errors":
-        filtered = logs.filter(log => log.type === "error");
-        break;
+        return logs.filter(log => log.type === "error");
       case "warnings":
-        filtered = logs.filter(log => log.type === "warning");
-        break;
+        return logs.filter(log => log.type === "warning");
       default:
-        filtered = logs;
+        return logs;
     }
-
-    setFilteredLogs(filtered);
   }, [logs, filter]);
+
+  // Sync memoized filtered logs to state
+  useEffect(() => {
+    setFilteredLogs(filteredLogsMemo);
+  }, [filteredLogsMemo]);
 
   const getLogIcon = (type: string) => {
     switch (type) {
@@ -121,7 +119,8 @@ export function AIReasoningPanel({
     return String(data);
   };
 
-  const filterOptions: { value: FilterType; label: string; count: number }[] = [
+  // Memoize filterOptions to prevent infinite loops
+  const filterOptions: { value: FilterType; label: string; count: number }[] = useMemo(() => [
     { value: "all", label: "All", count: logs.length },
     {
       value: "decisions",
@@ -138,7 +137,7 @@ export function AIReasoningPanel({
       label: "Errors",
       count: logs.filter(l => l.type === "error").length,
     },
-  ];
+  ], [logs]);
 
   return (
     <div

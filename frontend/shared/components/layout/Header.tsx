@@ -50,7 +50,7 @@ export function Header() {
 
             {/* Logo */}
             <div className="flex items-center space-x-2">
-              <div className="relative h-8 w-8 flex-shrink-0">
+              <div className="relative h-12 w-12 flex-shrink-0">
                 <Image
                   src="/images/logo.png"
                   alt="Video Translator"

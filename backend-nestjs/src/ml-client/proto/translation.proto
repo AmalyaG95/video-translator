@@ -16,6 +16,17 @@ message TranslationRequest {
   string file_path = 2;
   string source_lang = 3;
   string target_lang = 4;
+  string voice_gender = 5; // "male", "female", or "neutral" (defaults to "neutral")
+}
+
+message LogEntry {
+  string timestamp = 1;  // ISO 8601 timestamp
+  string level = 2;  // "info", "warning", "error", "debug", "success"
+  string stage = 3;  // Pipeline stage name
+  string message = 4;  // Log message
+  string chunk_id = 5;  // Optional chunk identifier
+  string session_id = 6;  // Session identifier
+  string extra_data = 7;  // JSON string for additional data
 }
 
 message TranslationProgress {
@@ -33,6 +44,18 @@ message TranslationProgress {
   double chunks_per_minute = 11;
   int32 current_chunk = 12;
   int32 total_chunks = 13;
+  repeated LogEntry log_entries = 14;  // Recent log entries for real-time display
+  // Detailed progress fields (2025 best practices)
+  string stage = 15;  // Current pipeline stage name
+  int32 stage_number = 16;  // Current stage number (1-based)
+  int32 total_stages = 17;  // Total number of stages
+  int32 segments_processed = 18;  // Number of segments processed
+  double current_time = 19;  // Current time in seconds
+  string current_time_formatted = 20;  // Formatted time (MM:SS or HH:MM:SS)
+  double total_duration = 21;  // Total duration in seconds
+  string total_duration_formatted = 22;  // Formatted total duration
+  double progress_percent = 23;  // Progress percentage for current stage
+  double elapsed_time = 24;  // Elapsed processing time in seconds
 }
 
 message ResultRequest {

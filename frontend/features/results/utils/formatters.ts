@@ -13,12 +13,14 @@ export const formatDuration = (seconds: number): string => {
   const mins = Math.floor((seconds % 3600) / 60);
   const secs = Math.floor(seconds % 60);
 
-  // Format as H:MM:SS or MM:SS
+  // Format as duration (e.g., "1h 23m 45s", "23m 45s", "45s")
   if (hours > 0) {
-    return `${hours}:${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+    return `${hours}h ${mins}m ${secs}s`;
+  } else if (mins > 0) {
+    return `${mins}m ${secs}s`;
+  } else {
+    return `${secs}s`;
   }
-
-  return `${mins}:${secs.toString().padStart(2, "0")}`;
 };
 
 export const formatProcessingTime = (ms: number): string => {

@@ -261,8 +261,10 @@ function FileUpload({
       setIsDragActive(false);
       const error = fileRejections[0]?.errors[0];
       if (error?.code === "file-too-large") {
+        const maxSizeGB = maxSize ?? 100 * 1_024 * 1_024 * 1_024;
+        const sizeInGB = maxSizeGB / (1_024 * 1_024 * 1_024);
         toast.error(
-          `File is too large. Maximum size is ${Math.round((maxSize ?? 50 * 1_024 * 1_024) / 1_024 / 1_024)}MB`
+          `File is too large. Maximum size is ${sizeInGB >= 1 ? Math.round(sizeInGB) + 'GB' : Math.round(sizeInGB * 1024) + 'MB'}`
         );
       } else if (error?.code === "file-invalid-type") {
         toast.error("Invalid file type. Please upload a video file.");
@@ -380,8 +382,11 @@ function FileUpload({
                   </p>
                   <p className="text-xs text-gray-500 dark:text-gray-500">
                     Maximum size:{" "}
-                    {Math.round((maxSize ?? 50 * 1_024 * 1_024) / 1_024 / 1_024)}
-                    MB
+                    {(() => {
+                      const maxSizeGB = maxSize ?? 100 * 1_024 * 1_024 * 1_024;
+                      const sizeInGB = maxSizeGB / (1_024 * 1_024 * 1_024);
+                      return sizeInGB >= 1 ? Math.round(sizeInGB) + 'GB' : Math.round(sizeInGB * 1024) + 'MB';
+                    })()}
                   </p>
                 </div>
 

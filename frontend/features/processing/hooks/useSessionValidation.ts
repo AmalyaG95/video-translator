@@ -46,7 +46,7 @@ export function useSessionValidation(sessionId: string | undefined) {
         useTranslationStore.getState().setCurrentSession(null);
       } finally {
         if (isMounted) {
-          setIsValidating(false);
+        setIsValidating(false);
         }
       }
     };

@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Logs
+*.log
+logs/
+*.jsonl
+
+# Environment
+.env
+.env.local
+
+# Proto generated files (will be generated at runtime)
+src/proto/*_pb2.py
+src/proto/*_pb2_grpc.py
+src/proto/*_pb2.pyi
+
+# Temporary files
+temp_work/
+*.tmp
+*.bak
+
+# OS
+.DS_Store
+Thumbs.db
+
+
+

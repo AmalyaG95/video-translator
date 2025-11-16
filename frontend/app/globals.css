@@ -90,6 +90,18 @@ body {
   font-family: "Inter", sans-serif;
 }
 
+/* Ensure emoji flags render correctly in Electron */
+.flag-emoji,
+[class*="flag"],
+span.text-2xl {
+  font-family: "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", "EmojiOne", "Twemoji Mozilla", system-ui, sans-serif !important;
+  font-feature-settings: "liga" 1, "calt" 1;
+  -webkit-font-feature-settings: "liga" 1, "calt" 1;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
 body {
   color: rgb(var(--foreground-rgb));
   background: linear-gradient(
@@ -354,7 +366,9 @@ a {
 
 /* Fullscreen styles */
 .video-container:fullscreen {
-  @apply h-full w-full bg-black;
+  width: 100vw;
+  height: 100vh;
+  background-color: black;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -365,15 +379,21 @@ a {
 }
 
 .video-container:fullscreen video {
-  @apply relative h-full w-full object-contain;
+  width: auto;
+  height: 100vh;
+  object-fit: contain;
   position: relative;
   top: auto;
   left: auto;
+  max-height: none !important;
+  max-width: 100vw;
 }
 
 /* Browser-specific fullscreen pseudo-classes */
 .video-container:-webkit-full-screen {
-  @apply h-full w-full bg-black;
+  width: 100vw;
+  height: 100vh;
+  background-color: black;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -384,14 +404,20 @@ a {
 }
 
 .video-container:-webkit-full-screen video {
-  @apply relative h-full w-full object-contain;
+  width: auto;
+  height: 100vh;
+  object-fit: contain;
   position: relative;
   top: auto;
   left: auto;
+  max-height: none !important;
+  max-width: 100vw;
 }
 
 .video-container:-moz-full-screen {
-  @apply h-full w-full bg-black;
+  width: 100vw;
+  height: 100vh;
+  background-color: black;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -402,14 +428,20 @@ a {
 }
 
 .video-container:-moz-full-screen video {
-  @apply relative h-full w-full object-contain;
+  width: auto;
+  height: 100vh;
+  object-fit: contain;
   position: relative;
   top: auto;
   left: auto;
+  max-height: none !important;
+  max-width: 100vw;
 }
 
 .video-container:-ms-fullscreen {
-  @apply h-full w-full bg-black;
+  width: 100vw;
+  height: 100vh;
+  background-color: black;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -420,10 +452,14 @@ a {
 }
 
 .video-container:-ms-fullscreen video {
-  @apply relative h-full w-full object-contain;
+  width: auto;
+  height: 100vh;
+  object-fit: contain;
   position: relative;
   top: auto;
   left: auto;
+  max-height: none !important;
+  max-width: 100vw;
 }
 
 /* Video progress bar slider positioning */
@@ -503,7 +539,7 @@ a {
   text-wrap: pretty;
 }
 
-/* Video subtitle/cue styling */
+/* Video subtitle/cue styling - Enhanced for visibility */
 video::cue {
   background-color: rgba(0, 0, 0, 0.85) !important;
   color: #ffffff !important;
@@ -513,8 +549,30 @@ video::cue {
   border-radius: 6px !important;
   line-height: 1.5 !important;
   text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8) !important;
-  font-family: 'Inter', sans-serif !important;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
   white-space: pre-wrap !important;
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  position: relative !important;
+  transition: opacity 0.3s ease-out !important;
+}
+
+/* Hide text track subtitles that have already been read (for non-embedded subtitles) */
+/* Note: This only works for text track subtitles, not embedded (burned-in) subtitles */
+video::cue:not(:active) {
+  /* Subtitles that are no longer active will fade out */
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+
+/* Ensure subtitle container is visible - additional specificity */
+/* Only show active cues (currently displayed subtitles) */
+.video-container video::cue:active,
+video::cue:active {
+  visibility: visible !important;
+  display: block !important;
+  opacity: 1 !important;
 }
 
 /* Dark mode subtitle styling */
@@ -524,6 +582,15 @@ video::cue {
     color: #ffffff !important;
     text-shadow: 2px 2px 4px rgba(0, 0, 0, 1) !important;
   }
+}
+
+/* Additional styling for subtitle tracks */
+.video-container video::cue,
+video[controls]::cue {
+  background-color: rgba(0, 0, 0, 0.85) !important;
+  color: #ffffff !important;
+  font-size: 20px !important;
+  visibility: visible !important;
 }
 
 /* Print styles */

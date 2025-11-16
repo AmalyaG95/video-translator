@@ -28,6 +28,7 @@ const DynamicETA = ({
   totalChunks,
   isPaused = false,
   status,
+  progress,
 }: DynamicETAProps) => {
   const formatTime = (seconds: number) => {
     if (seconds < 60) {
@@ -89,16 +90,24 @@ const DynamicETA = ({
             </span>
           ) : etaSeconds && etaSeconds > 0 ? (
             <span className="flex items-center">
-              ~{formatTime(etaSeconds)} remaining
-              {speedIndicator && (
-                <span className={`ml-2 text-sm ${speedIndicator.color}`}>
-                  {speedIndicator.icon} {speedIndicator.text}
+              {progress && progress <= 5 ? (
+                <span>
+                  Initializing... ~{formatTime(etaSeconds)} estimated
                 </span>
+              ) : (
+                <>
+                  ~{formatTime(etaSeconds)} remaining
+                  {speedIndicator && (
+                    <span className={`ml-2 text-sm ${speedIndicator.color}`}>
+                      {speedIndicator.icon} {speedIndicator.text}
+                    </span>
+                  )}
+                </>
               )}
             </span>
           ) : (
             <span className="text-gray-500 dark:text-gray-400">
-              Calculating...
+              {progress && progress <= 5 ? "Initializing pipeline..." : "Calculating..."}
             </span>
           )}
         </div>

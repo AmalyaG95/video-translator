@@ -31,6 +31,9 @@ import { MlClientService } from '../ml-client/ml-client.service';
 
 @Controller()
 export class SessionsController {
+  // Track sent log IDs per session to avoid duplicates in logs stream
+  private sentLogIds: Map<string, Set<string>> = new Map();
+
   constructor(
     private readonly sessionsService: SessionsService,
     private readonly mlClientService: MlClientService,
@@ -109,7 +112,24 @@ export class SessionsController {
           early_preview_available: session.earlyPreviewAvailable || false,
           early_preview_path: session.earlyPreviewPath || '',
           isPaused: session.isPaused || false,
+          logs: session.logs || [], // Include logs in SSE stream
+          // Detailed progress fields (from backend)
+          stage: session.stage,
+          stage_number: session.stage_number,
+          total_stages: session.total_stages,
+          segments_processed: session.segments_processed,
+          current_time: session.current_time,
+          current_time_formatted: session.current_time_formatted,
+          total_duration: session.total_duration,
+          total_duration_formatted: session.total_duration_formatted,
+          progress_percent: session.progress_percent,
+          elapsed_time: session.elapsed_time,
         };
+
+        // Debug: Log if we're sending logs in progress stream
+        if (progressData.logs && progressData.logs.length > 0) {
+          console.log(`📡 [PROGRESS STREAM] Sending ${progressData.logs.length} logs for session ${id} in progress update`);
+        }
 
         return {
           data: JSON.stringify(progressData),
@@ -334,16 +354,38 @@ export class SessionsController {
       storage: diskStorage({
         destination: (req, file, cb) => {
           const path = require('path');
-          const projectRoot = path.resolve(__dirname, '..', '..', '..');
-          const dataDir = path.join(projectRoot, '.data', 'uploads');
           const fs = require('fs');
-          if (!fs.existsSync(path.join(projectRoot, '.data'))) {
-            fs.mkdirSync(path.join(projectRoot, '.data'), { recursive: true });
+          
+          // Check if running in Docker (check for /.dockerenv or DOCKER_CONTAINER env var)
+          // Don't use NODE_ENV === 'production' as that's also true for standalone AppImage
+          const isDocker = fs.existsSync('/.dockerenv') || process.env.DOCKER_CONTAINER === 'true';
+          const dockerUploadsPath = '/app/uploads';
+          
+          // Use environment variable if set (for standalone AppImage)
+          if (process.env.UPLOADS_DIR) {
+            const uploadsDir = process.env.UPLOADS_DIR;
+            if (!fs.existsSync(uploadsDir)) {
+              fs.mkdirSync(uploadsDir, { recursive: true });
+            }
+            cb(null, uploadsDir);
+          } else if (isDocker && fs.existsSync('/app/uploads')) {
+            // Running in Docker - use /app/uploads
+            if (!fs.existsSync(dockerUploadsPath)) {
+              fs.mkdirSync(dockerUploadsPath, { recursive: true });
+            }
+            cb(null, dockerUploadsPath);
+          } else {
+            // Running locally or standalone - use .data/uploads
+            const projectRoot = path.resolve(__dirname, '..', '..', '..');
+            const dataDir = path.join(projectRoot, '.data', 'uploads');
+            if (!fs.existsSync(path.join(projectRoot, '.data'))) {
+              fs.mkdirSync(path.join(projectRoot, '.data'), { recursive: true });
+            }
+            if (!fs.existsSync(dataDir)) {
+              fs.mkdirSync(dataDir, { recursive: true });
+            }
+            cb(null, dataDir);
           }
-          if (!fs.existsSync(dataDir)) {
-            fs.mkdirSync(dataDir, { recursive: true });
-          }
-          cb(null, dataDir);
         },
         filename: (req, file, cb) => {
           const uniqueSuffix =
@@ -352,7 +394,7 @@ export class SessionsController {
         },
       }),
       limits: {
-        fileSize: 500 * 1024 * 1024, // 500MB
+        fileSize: 100 * 1024 * 1024 * 1024, // 100GB - supports 15+ hour videos
       },
     }),
   )
@@ -374,7 +416,16 @@ export class SessionsController {
     }
 
     // Convert relative path to absolute path for Python ML service
-    const absolutePath = resolve(file.path);
+    // In Docker, file.path is already absolute (/app/uploads/...)
+    // In local dev, it's relative (.data/uploads/...), so resolve it
+    let absolutePath: string;
+    if (file.path.startsWith('/')) {
+      // Already absolute (Docker)
+      absolutePath = file.path;
+    } else {
+      // Relative path (local dev) - resolve it
+      absolutePath = resolve(file.path);
+    }
 
     const session = this.sessionsService.createSession({
       filePath: absolutePath,
@@ -439,23 +490,14 @@ export class SessionsController {
         throw new BadRequestException('No file found in session');
       }
 
-      // Call Python ML HTTP service for language detection
-      const response = await fetch('http://localhost:50052/detect-language', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          file_path: filePath,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Language detection failed');
-      }
-
-      const result = await response.json();
-      return result;
+      // Call Python ML gRPC service for language detection
+      const result = await this.mlClientService.detectLanguage(filePath);
+      return {
+        detected_language: result.detected_language || 'en',
+        confidence: result.confidence || 0.5,
+        success: result.success !== false,
+        message: result.message || 'Language detection completed',
+      };
     } catch (error) {
       console.error('Language detection error:', error);
       // Return a fallback detection
@@ -474,16 +516,38 @@ export class SessionsController {
       storage: diskStorage({
         destination: (req, file, cb) => {
           const path = require('path');
-          const projectRoot = path.resolve(__dirname, '..', '..', '..');
-          const dataDir = path.join(projectRoot, '.data', 'uploads');
           const fs = require('fs');
-          if (!fs.existsSync(path.join(projectRoot, '.data'))) {
-            fs.mkdirSync(path.join(projectRoot, '.data'), { recursive: true });
+          
+          // Check if running in Docker (check for /.dockerenv or DOCKER_CONTAINER env var)
+          // Don't use NODE_ENV === 'production' as that's also true for standalone AppImage
+          const isDocker = fs.existsSync('/.dockerenv') || process.env.DOCKER_CONTAINER === 'true';
+          const dockerUploadsPath = '/app/uploads';
+          
+          // Use environment variable if set (for standalone AppImage)
+          if (process.env.UPLOADS_DIR) {
+            const uploadsDir = process.env.UPLOADS_DIR;
+            if (!fs.existsSync(uploadsDir)) {
+              fs.mkdirSync(uploadsDir, { recursive: true });
+            }
+            cb(null, uploadsDir);
+          } else if (isDocker && fs.existsSync('/app/uploads')) {
+            // Running in Docker - use /app/uploads
+            if (!fs.existsSync(dockerUploadsPath)) {
+              fs.mkdirSync(dockerUploadsPath, { recursive: true });
+            }
+            cb(null, dockerUploadsPath);
+          } else {
+            // Running locally or standalone - use .data/uploads
+            const projectRoot = path.resolve(__dirname, '..', '..', '..');
+            const dataDir = path.join(projectRoot, '.data', 'uploads');
+            if (!fs.existsSync(path.join(projectRoot, '.data'))) {
+              fs.mkdirSync(path.join(projectRoot, '.data'), { recursive: true });
+            }
+            if (!fs.existsSync(dataDir)) {
+              fs.mkdirSync(dataDir, { recursive: true });
+            }
+            cb(null, dataDir);
           }
-          if (!fs.existsSync(dataDir)) {
-            fs.mkdirSync(dataDir, { recursive: true });
-          }
-          cb(null, dataDir);
         },
         filename: (req, file, cb) => {
           const uniqueSuffix =
@@ -492,7 +556,7 @@ export class SessionsController {
         },
       }),
       limits: {
-        fileSize: 100 * 1024 * 1024, // 100MB for detection
+        fileSize: 10 * 1024 * 1024 * 1024, // 10GB for detection - supports large videos
       },
     }),
   )
@@ -502,23 +566,24 @@ export class SessionsController {
     }
 
     try {
-      // Call Python ML HTTP service for language detection
-      const response = await fetch('http://localhost:50052/detect-language', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          file_path: resolve(file.path),
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Language detection failed');
+      // Call Python ML gRPC service for language detection
+      // In Docker, file.path is already absolute (/app/uploads/...)
+      // In local dev, it's relative (.data/uploads/...), so resolve it
+      let filePath: string;
+      if (file.path.startsWith('/')) {
+        // Already absolute (Docker)
+        filePath = file.path;
+      } else {
+        // Relative path (local dev) - resolve it
+        filePath = resolve(file.path);
       }
-
-      const result = await response.json();
-      return result;
+      const result = await this.mlClientService.detectLanguage(filePath);
+      return {
+        detected_language: result.detected_language || 'en',
+        confidence: result.confidence || 0.5,
+        success: result.success !== false,
+        message: result.message || 'Language detection completed',
+      };
     } catch (error) {
       console.error('Language detection error:', error);
       // Return a fallback detection
@@ -601,6 +666,11 @@ export class SessionsController {
   }
 
   private calculateETA(session: Session): number {
+    // If backend provides ETA, use it (most accurate)
+    if (session.etaSeconds && session.etaSeconds > 0) {
+      return session.etaSeconds;
+    }
+
     // Use chunk-based calculation for more accuracy with current/totalChunks
     if (
       session.currentChunk !== undefined &&
@@ -618,16 +688,57 @@ export class SessionsController {
         return eta;
       }
 
-      return 0;
+      // If we have totalChunks but no chunks processed yet, estimate based on duration
+      if (chunksProcessed === 0 && session.totalChunks > 0) {
+        return this.estimateETAFromDuration(session);
+      }
+    }
+
+    // During initialization or early stages, calculate ETA based on video duration
+    if (session.progress <= 5 || !session.currentChunk || session.currentChunk === 0) {
+      return this.estimateETAFromDuration(session);
     }
 
     // Fallback to progress-based calculation
-    if (session.progress <= 0) return 0;
+    if (session.progress > 0) {
+      const now = new Date();
+      const elapsed = (now.getTime() - session.createdAt.getTime()) / 1000; // seconds
+      const remaining = (100 - session.progress) / session.progress;
+      return Math.max(0, Math.floor(elapsed * remaining));
+    }
 
-    const now = new Date();
-    const elapsed = (now.getTime() - session.createdAt.getTime()) / 1000; // seconds
-    const remaining = (100 - session.progress) / session.progress;
-    return Math.max(0, Math.floor(elapsed * remaining));
+    // Final fallback: estimate from duration
+    return this.estimateETAFromDuration(session);
+  }
+
+  private estimateETAFromDuration(session: Session): number {
+    // Get video duration from session metadata or duration field
+    const duration = session.metadata?.duration || session.duration || 0;
+    
+    if (duration <= 0) {
+      // If no duration available, return 0 (frontend will show "Calculating...")
+      return 0;
+    }
+
+    // Calculate realistic ETA based on processing stages:
+    // 1. Initialization: ~10-30 seconds (model loading, setup)
+    // 2. STT (Speech-to-Text): ~0.5x realtime (Whisper processing)
+    // 3. Translation: ~0.1x realtime (fast model inference)
+    // 4. TTS (Text-to-Speech): ~0.3x realtime (voice synthesis)
+    // 5. Audio sync: ~0.2x realtime (audio processing)
+    // 6. Video encoding: ~0.5x realtime (video rendering with subtitles)
+    
+    // Total processing factor: ~1.6x realtime (faster than realtime for most stages)
+    // But we add overhead for initialization and chunking
+    
+    const initializationTime = 20; // 20 seconds for model loading
+    const processingFactor = 1.8; // 1.8x realtime (conservative estimate)
+    const overheadFactor = 1.15; // 15% overhead for chunking, I/O, etc.
+    
+    const estimatedProcessingTime = duration * processingFactor * overheadFactor;
+    const totalETA = Math.ceil(initializationTime + estimatedProcessingTime);
+    
+    return Math.max(30, totalETA); // Minimum 30 seconds
   }
 
   private getHardwareInfo() {
@@ -666,12 +777,14 @@ export class SessionsController {
     let logCounter = 0;
     let currentChunk = 0;
 
+    console.log(`🔵 [LOGS STREAM] Starting logs stream for session ${id}`);
     return interval(2000).pipe(
       // Increased interval to 2 seconds for better readability
       map(() => {
         try {
           const session = this.sessionsService.findOne(id);
           if (!session) {
+            console.log(`🔵 [LOGS STREAM] Session ${id} not found`);
             return {
               data: JSON.stringify({
                 timestamp: new Date().toISOString(),
@@ -685,6 +798,7 @@ export class SessionsController {
 
           // Check if session is completed or failed - don't stream logs for these
           if (session.status === 'completed' || session.status === 'failed') {
+            console.log(`🔵 [LOGS STREAM] Session ${id} is ${session.status}, no logs to stream`);
             return {
               data: JSON.stringify({
                 timestamp: new Date().toISOString(),
@@ -711,21 +825,62 @@ export class SessionsController {
           currentChunk =
             session.currentChunk || Math.floor((progress / 100) * totalChunks);
 
-          // Generate detailed process logs
-          const processLogs = this.generateProcessLogs(
-            id,
-            session,
-            progress,
-            currentChunk,
-            totalChunks,
-          );
-
-          // Select appropriate log based on progress
-          const selectedLog = processLogs[logCounter % processLogs.length];
-          logCounter++;
-
+          // Use real logs from session instead of generating synthetic logs
+          // This prevents duplicates with the progress stream
+          const realLogs = session.logs || [];
+          
+          // Debug: Always log to see what's happening
+          console.log(`📤 [LOGS STREAM] Session ${id}: ${realLogs.length} total logs in session, status: ${session.status}`);
+          
+          // Only send new logs that haven't been sent yet
+          // Track sent log IDs to avoid duplicates
+          if (!this.sentLogIds) {
+            this.sentLogIds = new Map<string, Set<string>>();
+          }
+          if (!this.sentLogIds.has(id)) {
+            this.sentLogIds.set(id, new Set());
+          }
+          const sentIds = this.sentLogIds.get(id)!;
+          
+          // Find new logs (not yet sent)
+          const newLogs = realLogs.filter(log => {
+            const logId = `${log.timestamp}-${log.message}`;
+            if (sentIds.has(logId)) {
+              return false; // Already sent
+            }
+            sentIds.add(logId); // Mark as sent
+            return true;
+          });
+          
+          // Debug logging
+          console.log(`📤 [LOGS STREAM] Session ${id}: ${realLogs.length} total logs, ${newLogs.length} new logs to send, ${sentIds.size} already sent`);
+          
+          // If no new logs, don't send anything (avoid duplicate heartbeat logs)
+          // The progress stream already sends progress updates, we don't need duplicate heartbeats
+          if (newLogs.length === 0) {
+            // Return empty data to keep connection alive without creating log entries
+            return {
+              data: JSON.stringify({
+                type: 'heartbeat',
+                timestamp: new Date().toISOString(),
+              }),
+            };
+          }
+          
+          // Send the first new log (one at a time to avoid overwhelming)
+          const logToSend = newLogs[0];
+          console.log(`📤 [LOGS STREAM] Sending log: ${logToSend.message.substring(0, 50)}...`);
           return {
-            data: JSON.stringify(selectedLog),
+            data: JSON.stringify({
+              id: `${logToSend.timestamp}-${logToSend.message}`,
+              timestamp: logToSend.timestamp,
+              level: logToSend.level,
+              stage: logToSend.stage,
+              message: logToSend.message,
+              chunkId: logToSend.chunkId,
+              sessionId: logToSend.sessionId || id,
+              data: logToSend.extraData,
+            }),
           };
         } catch (error) {
           return {

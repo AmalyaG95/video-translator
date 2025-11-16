@@ -90,6 +90,16 @@ translation:
 # TTS Configuration (Edge-TTS)
 tts:
   provider: "edge-tts"
+  # Rate limiting configuration
+  rate_limiting:
+    min_delay_seconds: 0.1  # MINIMUM delay between TTS requests (optimized for speed)
+    default_delay_seconds: 0.2  # Default pre-TTS delay (reduced from 0.5s)
+    inter_segment_delay_seconds: 0.0  # REMOVED: No delay between segments (handled by pre-TTS delay)
+    max_concurrent_requests: 1  # Must be 1 for Edge-TTS to avoid 403 errors
+    adaptive_delay: true  # Automatically adjust delay based on rate limit errors
+    delay_increase_factor: 1.5  # Multiply delay by this on rate limit error
+    delay_decrease_factor: 0.95  # Faster decrease (was 0.9) - reduce delay more aggressively
+    min_error_interval: 5  # Check for rate limit errors every 5 segments (was 10) - adapt faster
   voices:
     en:
       male: "en-US-GuyNeural"

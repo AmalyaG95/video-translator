@@ -1,0 +1,49 @@
+version: "3.8"
+
+# Development override for docker-compose.yml
+# Use with: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  frontend:
+    environment:
+      - NODE_ENV=development
+      - WATCHPACK_POLLING=true
+    volumes:
+      # Mount source code for hot reload
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    command: npm run dev
+
+  nestjs-api:
+    environment:
+      - NODE_ENV=development
+      - WATCHPACK_POLLING=true
+    volumes:
+      # Mount source code for hot reload
+      - ./backend-nestjs/src:/app/src
+      - ./backend-nestjs/package.json:/app/package.json
+      - ./backend-nestjs/package-lock.json:/app/package-lock.json
+      - ./backend-nestjs/tsconfig.json:/app/tsconfig.json
+      - ./backend-nestjs/tsconfig.build.json:/app/tsconfig.build.json
+      - ./backend-nestjs/nest-cli.json:/app/nest-cli.json
+      - /app/node_modules
+      # Don't mount /app/dist - let it be created inside container to avoid EBUSY errors
+    working_dir: /app
+    command: >
+      sh -c "
+        npm install &&
+        npm run start:dev
+      "
+
+  python-ml:
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+    volumes:
+      # Mount all source code to avoid rebuilds on code changes
+      - ./backend-python-ml/src:/app/src
+      # Mount entrypoint and requirements so changes are visible
+      - ./backend-python-ml/entrypoint.sh:/app/entrypoint.sh
+      - ./backend-python-ml/requirements.txt:/app/requirements.txt
+

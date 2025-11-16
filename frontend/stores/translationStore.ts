@@ -394,11 +394,41 @@ export const useTranslationStore = create<TranslationStore>()(
                 return incoming?.totalChunks ?? existing?.totalChunks;
               };
 
+              // Handle logs: merge new logs with existing, avoiding duplicates
+              const mergeLogs = (existing: any[] | undefined, incoming: any[] | undefined) => {
+                if (!incoming || incoming.length === 0) {
+                  return existing || [];
+                }
+                
+                const logMap = new Map<string, any>();
+                
+                // Add existing logs
+                (existing || []).forEach(log => {
+                  const key = log.id || `${log.timestamp}-${log.message}`;
+                  logMap.set(key, log);
+                });
+                
+                // Add new logs (override if same id)
+                incoming.forEach(log => {
+                  const key = log.id || `${log.timestamp}-${log.message}`;
+                  logMap.set(key, log);
+                });
+                
+                // Convert to array, sort by timestamp, limit to 200
+                return Array.from(logMap.values())
+                  .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+                  .slice(-200);
+              };
+
               if (state.currentSession?.sessionId === sessionId) {
                 const preservedTotalChunks = preserveChunks(
                   state.currentSession,
                   updates
                 );
+                // Merge logs if provided
+                if (updates.logs) {
+                  updates.logs = mergeLogs(state.currentSession.logs, updates.logs);
+                }
                 Object.assign(state.currentSession, updates);
                 if (preservedTotalChunks !== undefined) {
                   state.currentSession.totalChunks = preservedTotalChunks;
@@ -412,6 +442,10 @@ export const useTranslationStore = create<TranslationStore>()(
                   state.sessions[sIdx]!,
                   updates
                 );
+                // Merge logs if provided
+                if (updates.logs) {
+                  updates.logs = mergeLogs(state.sessions[sIdx]!.logs, updates.logs);
+                }
                 Object.assign(state.sessions[sIdx]!, updates);
                 if (preservedTotalChunks !== undefined) {
                   state.sessions[sIdx]!.totalChunks = preservedTotalChunks;
@@ -426,6 +460,10 @@ export const useTranslationStore = create<TranslationStore>()(
                   state.recentSessions[rIdx]!,
                   updates
                 );
+                // Merge logs if provided
+                if (updates.logs) {
+                  updates.logs = mergeLogs(state.recentSessions[rIdx]!.logs, updates.logs);
+                }
                 Object.assign(state.recentSessions[rIdx]!, updates);
                 if (preservedTotalChunks !== undefined) {
                   state.recentSessions[rIdx]!.totalChunks =

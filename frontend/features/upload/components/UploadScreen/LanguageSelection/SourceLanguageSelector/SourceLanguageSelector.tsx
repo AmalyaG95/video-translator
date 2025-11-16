@@ -22,7 +22,10 @@ function SourceLanguageSelector({
         </label>
         <div className="flex w-full items-center justify-between rounded-lg border border-gray-300 bg-gray-50 px-4 py-3 dark:border-gray-600 dark:bg-gray-800">
           <div className="flex items-center space-x-3">
-            <span className="text-2xl">
+            <span 
+              className="text-2xl"
+              style={{ fontFamily: '"Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", "EmojiOne", "Twemoji Mozilla", system-ui, sans-serif' }}
+            >
               {SUPPORTED_LANGUAGES.find(lang => lang.code === sourceLanguage)
                 ?.flag || "🌐"}
             </span>

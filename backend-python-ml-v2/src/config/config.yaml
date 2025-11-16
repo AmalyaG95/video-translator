@@ -1,0 +1,76 @@
+# Video Translation ML Service Configuration
+# Follows best-practices/01-SYSTEM-DESIGN.md - Configuration Management
+
+models:
+  whisper_model_size: "base"  # Options: tiny, base, small, medium, large
+  whisper_device: "cpu"  # Options: cpu, cuda
+  translation_model_type: "auto"  # Options: "helsinki", "nllb", "auto" (auto selects best model)
+  translation_nllb_model_size: "1.3B"  # Options: "600M" (fastest), "1.3B" (best balance), "3.3B" (best quality)
+  translation_max_length: 256
+  translation_temperature: 0.3
+  translation_repetition_penalty: 1.3
+  translation_length_penalty: 0.95
+  enable_quantization: false  # INT8 quantization (2025 best practice)
+  enable_onnx: false  # ONNX Runtime (2025 best practice)
+  enable_tensorrt: false  # TensorRT optimization (NVIDIA GPUs)
+  use_polyglot_langdetect: true  # Use Polyglot for language detection (more accurate, 196 languages)
+
+quality:
+  target_lufs: -23.0  # Broadcast standard
+  lufs_tolerance: 2.0  # ±2dB tolerance
+  peak_max_db: -1.0  # Prevent clipping
+  lip_sync_accuracy_ms: 150.0  # ±150ms target
+  duration_fidelity_frames: 1  # Within 1 frame
+  max_segment_ratio: 1.5  # Max translation length ratio
+  lip_sync_delay_compensation: true  # Enable delay compensation for TTS audio
+  silence_threshold_db: -40.0  # RMS threshold for silence detection (dB)
+  max_start_delay_ms: 200  # Maximum delay to compensate (ms)
+
+segmentation:
+  vad_enabled: true  # Enable VAD preprocessing
+  vad_aggressiveness: 1  # VAD aggressiveness (0-3, lower=less aggressive, 1=balanced)
+  min_speech_duration_ms: 250  # Minimum speech segment duration in ms
+  min_silence_duration_ms: 500  # Minimum silence duration to split segments in ms
+  speech_pad_ms: 200  # Padding around speech segments in ms
+  semantic_merging_enabled: true  # Enable semantic merging of incomplete sentences
+  max_merge_lookahead: 12  # Maximum segments to look ahead for merging (increased for better sentence completion)
+  max_merged_length: 2000  # Maximum character length for merged segments (increased to preserve long text)
+  gap_merge_threshold_ms: 1000  # Gap threshold in ms for merging segments
+  min_segment_duration: 0.5  # Minimum segment duration in seconds
+  max_segment_duration: 60.0  # Maximum segment duration in seconds (increased to preserve long segments)
+  use_nltk_tokenization: true  # Enable NLTK sentence tokenization (better accuracy)
+  duplicate_similarity_threshold: 0.8  # Threshold for merging duplicates (0.0-1.0)
+  natural_break_duration_ms: 1000  # Duration for natural speech breaks in ms
+  merge_duplicate_overlaps: true  # Merge overlapping duplicates
+  use_prosodic_features: true  # Enable librosa prosodic analysis (pitch, energy, tempo)
+  prosodic_pause_threshold_ms: 1000  # Pause duration for natural breaks in ms
+
+processing:
+  max_concurrent_segments: 5
+  tts_rate_limit_delay: 0.5  # Seconds between TTS requests
+  audio_sample_rate: 16000  # Optimal for Whisper
+  audio_channels: 1  # Mono
+  video_crf: 28  # Quality setting (lower=better, 18-32 range)
+  video_preset: "slow"  # FFmpeg preset (slow=better compression)
+  audio_bitrate: "128k"
+
+subtitle:
+  min_gap_seconds: 0.5  # Minimum gap between subtitles (0.5s recommended for readability)
+  timing_adjustment_enabled: true  # Allow timing adjustments for translated subtitles
+  max_timing_shift: 0.5  # Maximum seconds to shift timing for readability (maintains audio sync)
+  min_duration_seconds: 2.0  # Minimum subtitle display duration
+  reading_speed_chars_per_sec: 10.0  # Reading speed: characters per second
+  reading_speed_words_per_sec: 2.0  # Reading speed: words per second
+  max_subtitle_length: 84  # Maximum characters per subtitle entry (industry standard: 2 lines × 42 chars)
+  max_subtitle_lines: 2  # Maximum lines per subtitle (industry standard)
+
+paths:
+  # These can be overridden by environment variables
+  uploads_dir: "/app/uploads"
+  artifacts_dir: "/app/artifacts"
+  temp_work_dir: "/app/temp_work"
+  checkpoints_dir: "/app/temp_work/checkpoints"
+  logs_dir: "/app/temp_work/logs"
+
+
+

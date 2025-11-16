@@ -49,6 +49,26 @@ export interface Session {
   };
   availableSegments?: string[];
   isPaused?: boolean;
+  logs?: Array<{
+    timestamp: string;
+    level: string;
+    stage: string;
+    message: string;
+    chunkId?: string;
+    sessionId?: string;
+    extraData?: any;
+  }>;
+  // Detailed progress fields (from backend)
+  stage?: string;
+  stage_number?: number;
+  total_stages?: number;
+  segments_processed?: number;
+  current_time?: number;
+  current_time_formatted?: string;
+  total_duration?: number;
+  total_duration_formatted?: string;
+  progress_percent?: number;
+  elapsed_time?: number;
 }
 
 @Injectable()
@@ -100,7 +120,38 @@ export class SessionsService {
   updateProgress(sessionId: string, progress: Partial<Session>): void {
     const session = this.#sessions.get(sessionId);
     if (!session) {
-      throw new NotFoundException(`Session ${sessionId} not found`);
+      return;
+    }
+
+    // Handle logs: append new logs, maintain max 200 logs
+    if (progress.logs && progress.logs.length > 0) {
+      const existingLogs = session.logs || [];
+      const newLogs = progress.logs;
+      
+      console.log(`💾 [SESSIONS SERVICE] Storing ${newLogs.length} new logs for session ${sessionId} (existing: ${existingLogs.length})`);
+      
+      // Merge logs, avoiding duplicates (by timestamp + message)
+      const logMap = new Map<string, typeof newLogs[0]>();
+      
+      // Add existing logs
+      existingLogs.forEach(log => {
+        const key = `${log.timestamp}-${log.message}`;
+        logMap.set(key, log);
+      });
+      
+      // Add new logs
+      newLogs.forEach(log => {
+        const key = `${log.timestamp}-${log.message}`;
+        logMap.set(key, log);
+      });
+      
+      // Convert back to array, sort by timestamp, limit to 200
+      const allLogs = Array.from(logMap.values())
+        .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+        .slice(-200);
+      
+      console.log(`💾 [SESSIONS SERVICE] Session ${sessionId} now has ${allLogs.length} total logs`);
+      progress.logs = allLogs;
     }
 
     // Handle nested result object properly

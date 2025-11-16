@@ -26,13 +26,13 @@ export function useSSE() {
   const lastSessionIdRef = useRef<string | null>(null);
   const connectionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Throttled update functions to prevent excessive re-renders
+  // Reduced throttling for real-time updates (100ms instead of 500ms)
   const throttledUpdateProgress = useRef(
     throttle(
       (sessionId: string, data: any) => {
         updateSessionProgressRef.current(sessionId, data);
       },
-      500,
+      100, // Reduced from 500ms to 100ms for real-time feel
       { leading: true, trailing: true }
     )
   );
@@ -42,7 +42,7 @@ export function useSSE() {
       (session: any) => {
         setCurrentSessionRef.current(session);
       },
-      500,
+      100, // Reduced from 500ms to 100ms for real-time feel
       { leading: true, trailing: true }
     )
   );
@@ -105,10 +105,23 @@ export function useSSE() {
           // Enhanced fields
           etaSeconds: data.etaSeconds,
           hardwareInfo: data.hardwareInfo,
+          // Detailed progress fields (from backend kwargs)
+          segments_processed: data.segments_processed,
+          current_time: data.current_time,
+          current_time_formatted: data.current_time_formatted,
+          total_duration: data.total_duration,
+          total_duration_formatted: data.total_duration_formatted,
+          progress_percent: data.progress_percent,
+          elapsed_time: data.elapsed_time,
+          stage: data.stage,
+          stage_number: data.stage_number,
+          total_stages: data.total_stages,
+          stage_progress_percent: data.stage_progress_percent,
           availableSegments: data.availableSegments,
           processingSpeed: data.processingSpeed,
           currentChunk: data.currentChunk,
           totalChunks: data.totalChunks,
+          logs: data.logs || [], // Include logs from SSE
         };
 
         // Check if this is a critical status change
@@ -116,47 +129,111 @@ export function useSSE() {
           data.status === "completed" || data.status === "failed";
 
         if (isCritical) {
-          // Critical updates - immediate, no throttle
-          updateSessionProgressRef.current(sessionId, progressData);
+          // For completed sessions, fetch full session data from API to get result object
+          if (data.status === "completed" && sessionId) {
+            fetch(`${API_URL}/sessions/${sessionId}`)
+              .then(response => {
+                if (response.ok) {
+                  return response.json();
+                }
+                throw new Error("Failed to fetch session");
+              })
+              .then(fullSessionData => {
+                // Include result object in updates
+                const updatesWithResult = {
+                  ...progressData,
+                  result: fullSessionData.result,
+                  completedAt: fullSessionData.completedAt,
+                  startedAt: fullSessionData.startedAt,
+                };
+                
+                updateSessionProgressRef.current(sessionId, updatesWithResult);
 
-          // Update current session immediately
-          const currentSession = useTranslationStore.getState().currentSession;
-          if (currentSession && sessionId) {
-            const updatedSession: typeof currentSession = {
-              ...currentSession,
-              sessionId,
-              progress: data.progress ?? currentSession.progress,
-              currentStep:
-                data.currentStep ??
-                data.current_step ??
-                currentSession.currentStep,
-              status: data.status ?? currentSession.status,
-              message: data.message ?? currentSession.message,
-              early_preview_available:
-                data.earlyPreviewAvailable ??
-                data.early_preview_available ??
-                currentSession.early_preview_available,
-              early_preview_path:
-                data.earlyPreviewPath ??
-                data.early_preview_path ??
-                currentSession.early_preview_path,
-              etaSeconds: data.etaSeconds ?? currentSession.etaSeconds,
-              hardwareInfo: data.hardwareInfo ?? currentSession.hardwareInfo,
-              availableSegments:
-                data.availableSegments ?? currentSession.availableSegments,
-              processingSpeed:
-                data.processingSpeed ?? currentSession.processingSpeed,
-              currentChunk: data.currentChunk ?? currentSession.currentChunk,
-              totalChunks:
-                data.totalChunks !== undefined && data.totalChunks > 0
-                  ? data.totalChunks
-                  : currentSession.totalChunks !== undefined &&
-                      currentSession.totalChunks > 0
-                    ? currentSession.totalChunks
-                    : (data.totalChunks ?? currentSession.totalChunks),
-            };
+                // Update current session with full data including result
+                const currentSession = useTranslationStore.getState().currentSession;
+                if (currentSession && sessionId) {
+                  const updatedSession: typeof currentSession = {
+                    ...currentSession,
+                    ...fullSessionData,
+                    sessionId,
+                  };
 
-            setCurrentSessionRef.current(updatedSession);
+                  setCurrentSessionRef.current(updatedSession);
+                }
+              })
+              .catch(error => {
+                console.error("Failed to fetch full session data:", error);
+                // Fallback to basic update if fetch fails
+                updateSessionProgressRef.current(sessionId, progressData);
+              });
+          } else {
+            // For failed or other critical statuses, use basic update
+            updateSessionProgressRef.current(sessionId, progressData);
+
+            // Update current session immediately
+            const currentSession = useTranslationStore.getState().currentSession;
+            if (currentSession && sessionId) {
+              // Convert logs from backend format to frontend format
+              const backendLogs = data.logs || [];
+              const frontendLogs = backendLogs.map((log: any) => ({
+                id: `${log.timestamp}-${log.message}`,
+                timestamp: log.timestamp,
+                level: log.level as "info" | "warning" | "error" | "debug" | "success",
+                stage: log.stage,
+                message: log.message,
+                chunkId: log.chunkId || log.chunk_id,
+                sessionId: log.sessionId || log.session_id,
+                data: log.extraData || log.extra_data,
+              }));
+              
+              const updatedSession: typeof currentSession = {
+                ...currentSession,
+                sessionId,
+                progress: data.progress ?? currentSession.progress,
+                currentStep:
+                  data.currentStep ??
+                  data.current_step ??
+                  currentSession.currentStep,
+                status: data.status ?? currentSession.status,
+                message: data.message ?? currentSession.message,
+                early_preview_available:
+                  data.earlyPreviewAvailable ??
+                  data.early_preview_available ??
+                  currentSession.early_preview_available,
+                early_preview_path:
+                  data.earlyPreviewPath ??
+                  data.early_preview_path ??
+                  currentSession.early_preview_path,
+                etaSeconds: data.etaSeconds ?? currentSession.etaSeconds,
+                hardwareInfo: data.hardwareInfo ?? currentSession.hardwareInfo,
+                availableSegments:
+                  data.availableSegments ?? currentSession.availableSegments,
+                processingSpeed:
+                  data.processingSpeed ?? currentSession.processingSpeed,
+                currentChunk: data.currentChunk ?? currentSession.currentChunk,
+                totalChunks:
+                  data.totalChunks !== undefined && data.totalChunks > 0
+                    ? data.totalChunks
+                    : currentSession.totalChunks !== undefined &&
+                        currentSession.totalChunks > 0
+                      ? currentSession.totalChunks
+                      : (data.totalChunks ?? currentSession.totalChunks),
+                logs: frontendLogs.length > 0 ? frontendLogs : (currentSession.logs || []),
+                // Detailed progress fields (from backend)
+                stage: data.stage ?? currentSession.stage,
+                stage_number: data.stage_number ?? currentSession.stage_number,
+                total_stages: data.total_stages ?? currentSession.total_stages,
+                segments_processed: data.segments_processed ?? currentSession.segments_processed,
+                current_time: data.current_time ?? currentSession.current_time,
+                current_time_formatted: data.current_time_formatted ?? currentSession.current_time_formatted,
+                total_duration: data.total_duration ?? currentSession.total_duration,
+                total_duration_formatted: data.total_duration_formatted ?? currentSession.total_duration_formatted,
+                progress_percent: data.progress_percent ?? currentSession.progress_percent,
+                elapsed_time: data.elapsed_time ?? currentSession.elapsed_time,
+              };
+
+              setCurrentSessionRef.current(updatedSession);
+            }
           }
 
           // Show toast notifications
@@ -202,6 +279,51 @@ export function useSSE() {
             const currentSession =
               useTranslationStore.getState().currentSession;
             if (currentSession && sessionId) {
+              // Convert logs from backend format to frontend format
+              const backendLogs = data.logs || [];
+              
+              // Debug: Log if we receive logs
+              if (backendLogs.length > 0) {
+                console.log(`📥 [FRONTEND SSE] Received ${backendLogs.length} logs from progress stream for session ${sessionId}`);
+              }
+              
+              const frontendLogs = backendLogs.map((log: any) => ({
+                id: `${log.timestamp}-${log.message}`,
+                timestamp: log.timestamp,
+                level: log.level as "info" | "warning" | "error" | "debug" | "success",
+                stage: log.stage,
+                message: log.message,
+                chunkId: log.chunkId || log.chunk_id,
+                sessionId: log.sessionId || log.session_id,
+                data: log.extraData || log.extra_data,
+              }));
+              
+              // Merge logs properly to avoid duplicates
+              const mergeLogs = (existing: any[] | undefined, incoming: any[] | undefined) => {
+                if (!incoming || incoming.length === 0) {
+                  return existing || [];
+                }
+                
+                const logMap = new Map<string, any>();
+                
+                // Add existing logs
+                (existing || []).forEach(log => {
+                  const key = log.id || `${log.timestamp}-${log.message}`;
+                  logMap.set(key, log);
+                });
+                
+                // Add new logs (override if same id, but won't create duplicates)
+                incoming.forEach(log => {
+                  const key = log.id || `${log.timestamp}-${log.message}`;
+                  logMap.set(key, log);
+                });
+                
+                // Convert back to array, sort by timestamp, limit to 200
+                return Array.from(logMap.values())
+                  .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+                  .slice(-200);
+              };
+              
               const updatedSession: typeof currentSession = {
                 ...currentSession,
                 sessionId,
@@ -234,6 +356,18 @@ export function useSSE() {
                         currentSession.totalChunks > 0
                       ? currentSession.totalChunks
                       : (data.totalChunks ?? currentSession.totalChunks),
+                logs: mergeLogs(currentSession.logs, frontendLogs),
+                // Detailed progress fields (from backend)
+                stage: data.stage ?? currentSession.stage,
+                stage_number: data.stage_number ?? currentSession.stage_number,
+                total_stages: data.total_stages ?? currentSession.total_stages,
+                segments_processed: data.segments_processed ?? currentSession.segments_processed,
+                current_time: data.current_time ?? currentSession.current_time,
+                current_time_formatted: data.current_time_formatted ?? currentSession.current_time_formatted,
+                total_duration: data.total_duration ?? currentSession.total_duration,
+                total_duration_formatted: data.total_duration_formatted ?? currentSession.total_duration_formatted,
+                progress_percent: data.progress_percent ?? currentSession.progress_percent,
+                elapsed_time: data.elapsed_time ?? currentSession.elapsed_time,
               };
 
               throttledUpdateSession.current(updatedSession);

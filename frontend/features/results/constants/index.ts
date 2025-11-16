@@ -30,3 +30,7 @@ export const getQualityColor = (value: number): string => {
 
 
 
+
+
+
+

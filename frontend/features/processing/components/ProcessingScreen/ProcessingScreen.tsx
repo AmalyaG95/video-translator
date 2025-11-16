@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useEffect } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { useTranslationStore } from "@/stores/translationStore";
 import { parseAIReasoningLogs } from "../../utils/aiLogsParser";
+import { calculateETA, calculateProcessingSpeed } from "../../utils/etaCalculator";
 import { SESSION_REFRESH_INTERVAL } from "../../constants";
 
 // Custom hooks
@@ -51,6 +52,7 @@ const DynamicAIReasoningPanel = dynamic(
 function ProcessingScreen() {
   const router = useRouter();
   const { currentSession } = useTranslationStore();
+  const [isRestoringSession, setIsRestoringSession] = useState(false);
 
   // Custom hooks
   const { isValid } = useSessionValidation(currentSession?.sessionId);
@@ -112,9 +114,7 @@ function ProcessingScreen() {
   useEffect(() => {
     if (
       currentSession?.status === "uploaded" &&
-      !currentSession.isPaused &&
-      currentSession.status !== "cancelled" &&
-      currentSession.status !== "failed"
+      !currentSession.isPaused
     ) {
       handleStartTranslation();
     }
@@ -182,31 +182,116 @@ function ProcessingScreen() {
         clearInterval(intervalId);
       }
     };
-  }, [currentSession?.sessionId, currentSession?.status]);
+  }, [currentSession?.sessionId]);
 
   // Try to restore current session from recent sessions if none exists
+  // Validates with backend first, but allows completed sessions from localStorage
   useEffect(() => {
-    if (
-      !currentSession &&
-      useTranslationStore.getState().recentSessions.length > 0
-    ) {
-      const mostRecentSession =
-        useTranslationStore.getState().recentSessions[0];
-      if (mostRecentSession) {
-        useTranslationStore.getState().setCurrentSession(mostRecentSession);
-      }
+    if (currentSession) return; // Already have a session, no need to restore
+
+    const recentSessions = useTranslationStore.getState().recentSessions;
+    if (recentSessions.length === 0) return;
+
+    const mostRecentSession = recentSessions[0];
+    if (!mostRecentSession) return;
+
+    // If session is completed, allow viewing from localStorage even if backend doesn't have it
+    // This handles cases where backend restarted but artifacts still exist
+    if (mostRecentSession.status === "completed") {
+      useTranslationStore.getState().setCurrentSession(mostRecentSession);
+      return;
     }
+
+    // For non-completed sessions (uploaded, processing, etc.), validate with backend first
+    const validateAndRestore = async () => {
+      setIsRestoringSession(true);
+      try {
+        const response = await fetch(
+          `http://localhost:3001/sessions/${mostRecentSession.sessionId}`
+        );
+
+        if (response.ok) {
+          // Session exists on backend, restore it
+          const sessionData = await response.json();
+          useTranslationStore.getState().setCurrentSession({
+            ...mostRecentSession,
+            ...sessionData,
+          });
+        } else if (response.status === 404) {
+          // Session doesn't exist on backend and is not completed - don't restore
+          // Just skip restoration - session will remain in recentSessions for history
+        }
+        // Other errors (connection refused, etc.) - silently skip restoration
+      } catch (error) {
+        // Connection errors - silently skip restoration
+        // Don't restore session if backend is unavailable
+      } finally {
+        setIsRestoringSession(false);
+      }
+    };
+
+    validateAndRestore();
   }, [currentSession]);
 
   // Use useEffect to handle navigation to avoid setState during render
+  // Don't redirect while we're restoring a session
   useEffect(() => {
-    if (!currentSession) {
+    if (!currentSession && !isRestoringSession) {
       router.push("/");
     }
-  }, [currentSession, router]);
+  }, [currentSession, router, isRestoringSession]);
 
-  // Parse AI reasoning logs from the logs stream
-  const aiReasoningLogs = parseAIReasoningLogs(logs);
+  // Parse AI reasoning logs from the logs stream - memoize to prevent infinite loops
+  const aiReasoningLogs = useMemo(() => parseAIReasoningLogs(logs), [logs]);
+
+  // Calculate real ETA from progress data
+  const calculatedETA = useMemo(() => {
+    if (!currentSession) return null;
+    
+    return calculateETA({
+      progress: currentSession.progress,
+      progress_percent: currentSession.progress_percent,
+      elapsed_time: currentSession.elapsed_time,
+      segments_processed: currentSession.segments_processed,
+      total_segments: currentSession.totalChunks,
+      current_time: currentSession.current_time,
+      total_duration: currentSession.total_duration,
+      processingSpeed: currentSession.processingSpeed,
+      currentChunk: currentSession.currentChunk,
+      totalChunks: currentSession.totalChunks,
+      status: currentSession.status,
+    });
+  }, [
+    currentSession?.progress,
+    currentSession?.progress_percent,
+    currentSession?.elapsed_time,
+    currentSession?.segments_processed,
+    currentSession?.totalChunks,
+    currentSession?.current_time,
+    currentSession?.total_duration,
+    currentSession?.processingSpeed,
+    currentSession?.currentChunk,
+    currentSession?.status,
+  ]);
+
+  // Calculate real processing speed
+  const calculatedProcessingSpeed = useMemo(() => {
+    if (!currentSession) return null;
+    
+    const speed = calculateProcessingSpeed({
+      processingSpeed: currentSession.processingSpeed,
+      segments_processed: currentSession.segments_processed,
+      elapsed_time: currentSession.elapsed_time,
+      currentChunk: currentSession.currentChunk,
+    });
+    
+    return speed;
+  }, [
+    currentSession?.processingSpeed,
+    currentSession?.segments_processed,
+    currentSession?.elapsed_time,
+    currentSession?.currentChunk,
+  ]);
 
   // Handle case when no current session exists - use conditional rendering instead of early return
   if (!currentSession) {
@@ -229,14 +314,14 @@ function ProcessingScreen() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         {/*ETA and Hardware Info */}
         <DynamicETA
-          etaSeconds={currentSession.etaSeconds}
+          etaSeconds={calculatedETA ?? currentSession.etaSeconds}
           hardwareInfo={currentSession.hardwareInfo}
-          processingSpeed={currentSession.processingSpeed}
+          processingSpeed={calculatedProcessingSpeed ?? currentSession.processingSpeed}
           currentChunk={currentSession.currentChunk}
           totalChunks={currentSession.totalChunks}
           isPaused={currentSession.isPaused}
           status={currentSession.status}
-          progress={currentSession.progress}
+          progress={currentSession.progress_percent ?? currentSession.progress}
         />
 
         {/* Sample Chunk Preview Section */}

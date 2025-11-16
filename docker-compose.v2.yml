@@ -1,0 +1,189 @@
+version: "3.8"
+
+# Docker Compose configuration with new ML service v2
+# The new service can run alongside the old service for testing
+
+services:
+  # Frontend - Next.js (unchanged)
+  frontend:
+    image: translate-v_frontend:latest
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+      - NODE_ENV=${NODE_ENV:-production}
+      - WATCHPACK_POLLING=true
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - nestjs-api
+    networks:
+      - translator-network
+    restart: unless-stopped
+    command: >
+      sh -c "
+        if [ \"$$NODE_ENV\" = \"development\" ]; then
+          npm run dev
+        else
+          npm start
+        fi
+      "
+
+  # NestJS API Gateway (unchanged)
+  nestjs-api:
+    build:
+      context: ./backend-nestjs
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+      - "50051:50051"
+    environment:
+      - PORT=3001
+      - FRONTEND_URL=http://frontend:3000
+      - GRPC_ML_SERVICE_URL=python-ml-v2:50051  # Point to new service
+      - NODE_ENV=${NODE_ENV:-production}
+      - WATCHPACK_POLLING=true
+    volumes:
+      - ./uploads:/app/uploads
+      - ./artifacts:/app/artifacts
+      - ./backend-nestjs/src:/app/src
+      - ./backend-nestjs/package.json:/app/package.json
+      - ./backend-nestjs/package-lock.json:/app/package-lock.json
+      - ./backend-nestjs/tsconfig.json:/app/tsconfig.json
+      - ./backend-nestjs/tsconfig.build.json:/app/tsconfig.build.json
+      - ./backend-nestjs/nest-cli.json:/app/nest-cli.json
+      - /app/node_modules
+    depends_on:
+      - python-ml-v2
+    networks:
+      - translator-network
+    restart: unless-stopped
+    command: >
+      sh -c "
+        if [ \"$$NODE_ENV\" = \"development\" ]; then
+          npm install && npm run start:dev
+        else
+          node dist/main
+        fi
+      "
+
+  # Python ML Microservice v2 (NEW - Built from scratch)
+  python-ml-v2:
+    build:
+      context: ./backend-python-ml-v2
+      dockerfile: Dockerfile
+    ports:
+      - "50052:50051"  # Different port to avoid conflict with old service
+    volumes:
+      - ./uploads:/app/uploads
+      - ./artifacts:/app/artifacts
+      # Mount all source code to avoid rebuilds on code changes
+      - ./backend-python-ml-v2/src:/app/src
+      - ./backend-python-ml-v2/src/config:/app/src/config
+      # Mount entrypoint and requirements so changes are visible
+      - ./backend-python-ml-v2/entrypoint.sh:/app/entrypoint.sh
+      - ./backend-python-ml-v2/requirements.txt:/app/requirements.txt
+      - temp-work-v2:/app/temp_work
+    networks:
+      - translator-network
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - DOCKER_CONTAINER=true
+      - UPLOADS_DIR=/app/uploads
+      - ARTIFACTS_DIR=/app/artifacts
+      - TEMP_WORK_DIR=/app/temp_work
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: "4"
+        reservations:
+          memory: 4G
+          cpus: "2"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import grpc; grpc.insecure_channel('localhost:50051')",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Electron Desktop App
+  electron:
+    build:
+      context: .
+      dockerfile: electron/Dockerfile
+    container_name: translate-v-electron
+    environment:
+      - NODE_ENV=development
+      - SKIP_BACKEND=true
+      - DISPLAY=${DISPLAY:-:0}
+      - DOCKER_CONTAINER=true
+      # Connect to Docker services
+      - NEXT_PUBLIC_API_URL=http://localhost:3001
+      # Suppress D-Bus warnings (disable D-Bus completely)
+      - DBUS_SESSION_BUS_ADDRESS=/dev/null
+      # Disable dconf (settings storage)
+      - GSETTINGS_SCHEMA_DIR=/dev/null
+      # Force software rendering
+      - LIBGL_ALWAYS_SOFTWARE=1
+      - GALLIUM_DRIVER=llvmpipe
+      - MESA_GL_VERSION_OVERRIDE=3.3
+      - MESA_GLSL_VERSION_OVERRIDE=330
+      # Disable Vulkan completely
+      - VK_ICD_FILENAMES=
+      - VK_LAYER_PATH=
+      - VK_DRIVER_FILES=
+      # Suppress ALSA audio warnings (no audio device in container)
+      - PULSE_SERVER=unix:/dev/null
+      - ALSA_CARD=0
+      - ALSA_PCM_NAME=null
+      # Suppress MESA/DRM warnings
+      - MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
+      - GBM_BACKEND=llvmpipe
+    volumes:
+      # Mount X11 socket for display (Linux only)
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # Mount electron directory for development
+      - ./electron:/app/electron
+      - ./package.json:/app/package.json
+      - ./package-lock.json:/app/package-lock.json
+      - /app/node_modules
+      # Mount uploads directory so file picker can access test videos
+      - ./uploads:/app/uploads:ro
+    network_mode: "host"  # Use host network to access localhost services
+    # Alternative: Use bridge network and connect to translator-network
+    # networks:
+    #   - translator-network
+    # depends_on:
+    #   - frontend
+    #   - nestjs-api
+    restart: unless-stopped
+    # Security: Allow X11 access (required for GUI apps)
+    # Run: xhost +local:docker (or xhost +SI:localuser:root) before starting
+    # To revoke: xhost -local:docker
+    # Note: Running as non-root user to avoid sandbox issues
+    # User will be set in Dockerfile, or use --no-sandbox flag if needed
+
+networks:
+  translator-network:
+    driver: bridge
+
+volumes:
+  temp-work-v2:
+    driver: local
+
+

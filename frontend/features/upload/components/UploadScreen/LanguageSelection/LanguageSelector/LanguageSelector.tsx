@@ -37,7 +37,9 @@ function LanguageSelector({
         }`}
       >
         <div className="flex items-center space-x-3">
-          <span className="text-2xl">{selectedLanguage?.flag}</span>
+          <span className="text-2xl" style={{ fontFamily: '"Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", "EmojiOne", "Twemoji Mozilla", system-ui, sans-serif' }}>
+            {selectedLanguage?.flag || "🌐"}
+          </span>
           <span className="font-medium text-gray-900 dark:text-white">
             {selectedLanguage?.name}
           </span>
@@ -75,7 +77,9 @@ function LanguageSelector({
                   }`}
                 >
                   <div className="flex items-center space-x-3">
-                    <span className="text-2xl">{language.flag}</span>
+                    <span className="text-2xl" style={{ fontFamily: '"Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", "EmojiOne", "Twemoji Mozilla", system-ui, sans-serif' }}>
+                      {language.flag || "🌐"}
+                    </span>
                     <span className="font-medium text-gray-900 dark:text-white">
                       {language.name}
                     </span>

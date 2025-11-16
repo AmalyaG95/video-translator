@@ -32,14 +32,15 @@ export function useLanguageDetection() {
         console.log(
           `[Language Detection] Timeout reached, defaulting to English`
         );
-      }, 35_000); // Increased to 35 seconds
+      }, 120_000); // Increased to 120 seconds (2 minutes)
 
       try {
         setIsDetecting(true);
         const controller = new AbortController();
         const timeoutId = setTimeout(() => {
+          console.warn(`[Language Detection] Request timeout after 90 seconds, aborting`);
           controller.abort();
-        }, 30_000); // Increased to 30 seconds
+        }, 90_000); // Increased to 90 seconds
 
         console.log(
           `[Language Detection] Calling endpoint: ${API_ENDPOINTS.LANGUAGE_DETECTION_SESSION(sessionId)}`

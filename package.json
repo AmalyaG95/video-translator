@@ -27,30 +27,100 @@
     "appId": "com.video.translator",
     "productName": "Video Translator",
     "directories": {
-      "output": "dist"
+      "output": "dist",
+      "buildResources": "build"
     },
     "files": [
       "electron/**/*",
       "frontend/.next/**/*",
-      "backend-nestjs/dist/**/*",
-      "backend-python-ml/src/**/*",
-      "backend-python-ml/requirements.txt",
-      "!backend-python-ml/__pycache__/**/*",
-      "!backend-python-ml/tests/**/*",
-      "!backend-python-ml/artifacts/**/*",
-      "!backend-python-ml/venv/**/*"
+      "frontend/public/**/*",
+      "frontend/package.json",
+      "package.json",
+      "!**/node_modules/**/*",
+      "!**/.git/**/*",
+      "!**/__pycache__/**/*",
+      "!**/tests/**/*",
+      "!**/artifacts/**/*",
+      "!**/venv/**/*",
+      "!**/.next/cache/**/*",
+      "!backend-nestjs/**/*",
+      "!backend-python-ml/**/*",
+      "!backend-python-ml-v2/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "frontend",
+        "to": "frontend",
+        "filter": [
+          ".next/**/*",
+          "public/**/*",
+          "package.json",
+          "package-lock.json",
+          "node_modules/**/*",
+          "!node_modules/.cache/**/*"
+        ]
+      },
+      {
+        "from": "backend-nestjs",
+        "to": "backend-nestjs",
+        "filter": [
+          "dist/**/*",
+          "package.json",
+          "package-lock.json",
+          "node_modules/**/*"
+        ]
+      },
+      {
+        "from": "backend-python-ml-v2",
+        "to": "backend-python-ml-v2",
+        "filter": [
+          "src/**/*",
+          "requirements.txt",
+          "entrypoint.sh",
+          "venv/**/*",
+          "!**/__pycache__/**/*",
+          "!**/tests/**/*",
+          "!**/artifacts/**/*",
+          "!venv/**/__pycache__/**/*",
+          "!venv/**/*.pyc",
+          "!venv/**/*.pyo"
+        ]
+      }
+    ],
+    "asarUnpack": [
+      "**/frontend/**/*",
+      "**/backend-nestjs/**/*",
+      "**/backend-python-ml-v2/**/*",
+      "**/electron/standalone-launcher.js"
     ],
     "mac": {
       "category": "public.app-category.video",
-      "icon": "electron/assets/logo.png"
+      "icon": "electron/assets/logo.png",
+      "target": ["dmg", "zip"]
     },
     "win": {
-      "target": "nsis",
+      "target": ["nsis", "portable"],
       "icon": "electron/assets/logo.png"
     },
     "linux": {
-      "target": "AppImage",
-      "icon": "electron/assets/logo.png"
-    }
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "electron/assets/logo.png",
+      "category": "Video",
+      "desktop": {
+        "Name": "Video Translator",
+        "Comment": "Translate videos with AI-powered lip-sync",
+        "Categories": "Video;AudioVideo;",
+        "MimeType": "video/mp4;video/avi;video/mov;video/mkv;video/webm;"
+      }
+    },
+    "appImage": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "publish": null
   }
 }

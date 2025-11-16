@@ -1,0 +1,16 @@
+Collecting webrtcvad
+  Using cached webrtcvad-2.0.10.tar.gz (66 kB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: webrtcvad
+  Building wheel for webrtcvad (pyproject.toml): started
+  Building wheel for webrtcvad (pyproject.toml): finished with status 'done'
+  Created wheel for webrtcvad: filename=webrtcvad-2.0.10-cp313-cp313-linux_x86_64.whl size=89014 sha256=6ec4a8bc181f502dbe21dfa577e8e1f68d18410d9502cf255ad11cf0cb289877
+  Stored in directory: /home/amalya/.cache/pip/wheels/ef/d5/8c/4527373803038c9fd42e340c01e3410a29f1da6f234e8707fc
+Successfully built webrtcvad
+Installing collected packages: webrtcvad
+Successfully installed webrtcvad-2.0.10

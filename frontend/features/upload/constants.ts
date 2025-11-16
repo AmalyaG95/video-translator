@@ -1,6 +1,6 @@
 // Upload feature constants
 export const UPLOAD_CONSTANTS = {
-  MAX_FILE_SIZE: 50 * 1_024 * 1_024, // 50MB
+  MAX_FILE_SIZE: 100 * 1_024 * 1_024 * 1_024, // 100GB - supports 15+ hour videos
   CHUNK_SIZE: 30, // 30 seconds per chunk
   SUPPORTED_VIDEO_TYPES: [
     "video/mp4",
@@ -21,7 +21,7 @@ export const UPLOAD_CONSTANTS = {
 } as const;
 
 export const UPLOAD_MESSAGES = {
-  FILE_TOO_LARGE: "File size must be less than 50MB",
+  FILE_TOO_LARGE: "File size must be less than 100GB",
   INVALID_FILE_TYPE: "Please upload a valid video or audio file",
   UPLOAD_ERROR: "Failed to upload file. Please try again.",
   DETECTING_LANGUAGE: "AI is detecting the language...",

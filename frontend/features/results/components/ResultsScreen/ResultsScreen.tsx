@@ -95,122 +95,82 @@ const ResultsScreen = () => {
     fetchFullSession();
   }, [currentSession?.sessionId, currentSession?.status]);
 
-  // Fetch final video when session is completed
+  // Set video URL directly for streaming (supports Range requests for large files)
   useEffect(() => {
-    const fetchFinalVideo = async () => {
-      if (
-        !currentSession?.sessionId ||
-        currentSession.status !== "completed" ||
-        isLoadingVideo ||
-        videoUrl
-      )
-        return;
+    if (
+      !currentSession?.sessionId ||
+      currentSession.status !== "completed" ||
+      isLoadingVideo ||
+      videoUrl
+    )
+      return;
 
-      try {
-        setIsLoadingVideo(true);
+    try {
+      setIsLoadingVideo(true);
 
-        // Use AbortController for timeout handling
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout
-
-        let response: Response;
-        try {
-          response = await fetch(
-            `http://localhost:3001/download/${currentSession.sessionId}`,
-            {
-              signal: controller.signal,
-            }
-          );
-        } catch (fetchError: any) {
-          clearTimeout(timeoutId);
-          if (fetchError.name === "AbortError") {
-            console.warn("Video download timeout");
+      // Use direct URL streaming instead of blob for large files
+      // This allows the browser to use Range requests (206 Partial Content)
+      // Essential for 15+ hour videos that can't be loaded entirely into memory
+      const directVideoUrl = `http://localhost:3001/download/${currentSession.sessionId}`;
+      
+      // Verify the video URL is accessible with a HEAD request
+      fetch(directVideoUrl, { method: 'HEAD' })
+        .then((headResponse) => {
+          if (headResponse.status === 404) {
+            console.warn("Video file not found (404)");
+            setIsLoadingVideo(false);
             return;
           }
-          throw fetchError;
-        }
 
-        clearTimeout(timeoutId);
+          if (!headResponse.ok) {
+            console.error(`Video HEAD request failed: ${headResponse.status} ${headResponse.statusText}`);
+            setIsLoadingVideo(false);
+            return;
+          }
 
-        if (response.status === 404) {
-          // Video not found - likely backend was restarted or video was deleted
-          // This is expected, silently handle it
-          return;
-        }
+          // Get file size from Content-Length header
+          const contentLength = headResponse.headers.get('content-length');
+          if (contentLength) {
+            const size = parseInt(contentLength, 10);
+            setVideoFileSize(size);
+          }
 
-        if (!response.ok) {
-          throw new Error(
-            `Video not available: ${response.status} ${response.statusText}`
-          );
-        }
+          // Set the direct URL for streaming
+          // The video element will handle Range requests automatically
+          setVideoUrl(directVideoUrl);
+          setIsLoadingVideo(false);
 
-        // Handle large blob responses more carefully
-        let blob: Blob;
-        try {
-          blob = await response.blob();
-        } catch (blobError: any) {
-          // If blob conversion fails, it might be a network issue
-          console.warn("Failed to read video blob:", blobError);
-          return;
-        }
+          // Optionally load metadata asynchronously without blocking
+          const video = document.createElement("video");
+          video.preload = "metadata";
+          video.src = directVideoUrl;
+          video.crossOrigin = "anonymous";
 
-        // Create video element to get actual duration and size
-        const tempUrl = URL.createObjectURL(blob);
-        setVideoFileSize(blob.size); // Set file size from blob
-
-        const video = document.createElement("video");
-        video.src = tempUrl;
-
-        await new Promise<void>(resolve => {
           video.onloadedmetadata = () => {
             const duration = video.duration || 0;
-            setActualVideoDuration(Math.floor(duration));
-            URL.revokeObjectURL(tempUrl);
-            resolve();
+            if (duration > 0) {
+              setActualVideoDuration(Math.floor(duration));
+            }
           };
+
           video.onerror = () => {
-            URL.revokeObjectURL(tempUrl);
-            resolve();
+            console.warn("Failed to load video metadata, but video URL is set for streaming");
           };
+        })
+        .catch((error) => {
+          console.error("Failed to verify video URL:", error);
+          setIsLoadingVideo(false);
         });
 
-        // Clean up old URL if exists
-        if (videoUrl) {
-          URL.revokeObjectURL(videoUrl);
-        }
-
-        const url = URL.createObjectURL(blob);
-        setVideoUrl(url);
-      } catch (error: any) {
-        // Handle network errors gracefully
-        if (error.name === "AbortError") {
-          console.warn("Video download was aborted");
-        } else if (
-          error.message?.includes("Failed to fetch") ||
-          error.name === "TypeError"
-        ) {
-          console.warn("Network error fetching video:", error);
-        } else {
-          console.warn("Error fetching video:", error);
-        }
-        // Silently handle errors - video may not be available
-      } finally {
-        setIsLoadingVideo(false);
-      }
-    };
-
-    fetchFinalVideo();
+    } catch (error: any) {
+      console.error("Error setting up video streaming:", error);
+      setIsLoadingVideo(false);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentSession?.sessionId, currentSession?.status]);
 
   // Cleanup blob URL on unmount
-  useEffect(() => {
-    return () => {
-      if (videoUrl) {
-        URL.revokeObjectURL(videoUrl);
-      }
-    };
-  }, [videoUrl]);
+  // Cleanup: No need to revoke URLs since we're using direct URLs, not blob URLs
 
   const handleDownloadClick = useCallback(() => {
     if (!currentSession?.sessionId) return;
@@ -242,8 +202,8 @@ const ResultsScreen = () => {
     sessionWithResult?.result?.qualityMetrics
   );
   const qualityMetrics = {
-    lipSyncAccuracy: hasQualityMetrics?.syncAccuracy || 0,
-    voiceNaturalness: hasQualityMetrics?.voiceQuality || 0,
+    lipSyncAccuracy: Math.round(hasQualityMetrics?.syncAccuracy || 0),
+    voiceNaturalness: Math.round(hasQualityMetrics?.voiceQuality || 0),
     translationAccuracy:
       hasQualityMetrics?.translationQuality === "high"
         ? 90
@@ -254,8 +214,44 @@ const ResultsScreen = () => {
             : 0,
     durationMatch: hasQualityMetrics?.durationMatch || false,
     processingTime: (() => {
-      // First try to parse from result.processingTime string (handles various formats)
-      if (currentSession?.result?.processingTime) {
+      // First, try to use processingTimeSeconds directly from result (most accurate - from Python ML)
+      if (currentSession?.result?.processingTimeSeconds !== undefined && currentSession?.result?.processingTimeSeconds !== null) {
+        const seconds = typeof currentSession.result.processingTimeSeconds === 'number' 
+          ? currentSession.result.processingTimeSeconds 
+          : parseFloat(String(currentSession.result.processingTimeSeconds));
+        if (!isNaN(seconds) && seconds > 0) {
+          return Math.floor(seconds);
+        }
+      }
+
+      // Second, try elapsed_time from session (real-time processing time from backend)
+      if (currentSession?.elapsed_time !== undefined && currentSession?.elapsed_time !== null) {
+        const elapsed = typeof currentSession.elapsed_time === 'number'
+          ? currentSession.elapsed_time
+          : parseFloat(String(currentSession.elapsed_time));
+        if (!isNaN(elapsed) && elapsed > 0) {
+          return Math.floor(elapsed);
+        }
+      }
+
+      // Third, if processingTime is a number (milliseconds or seconds), use it directly
+      if (currentSession?.result?.processingTime !== undefined && currentSession?.result?.processingTime !== null) {
+        const timeValue = typeof currentSession.result.processingTime === 'number'
+          ? currentSession.result.processingTime
+          : parseFloat(String(currentSession.result.processingTime));
+        
+        if (!isNaN(timeValue) && timeValue > 0) {
+          // If it's a large number (> 1000), assume it's milliseconds, convert to seconds
+          if (timeValue > 1000) {
+            return Math.floor(timeValue / 1000);
+          }
+          // Otherwise assume it's already in seconds
+          return Math.floor(timeValue);
+        }
+      }
+
+      // Try to parse from result.processingTime string (handles various formats)
+      if (currentSession?.result?.processingTime && typeof currentSession.result.processingTime === 'string') {
         const timeStr = currentSession.result.processingTime;
         // Try different patterns
         const patterns = [
@@ -271,29 +267,41 @@ const ResultsScreen = () => {
           if (match) {
             let seconds = 0;
             for (let i = 0; i < mult.length; i++) {
-              seconds += parseInt(match[i + 1] || "0") * mult[i];
+              const matchValue = match[i + 1];
+              const multiplier = mult[i];
+              if (matchValue !== undefined && multiplier !== undefined) {
+                seconds += parseInt(matchValue, 10) * multiplier;
+              }
             }
+            if (seconds > 0) {
+              return seconds;
+            }
+          }
+        }
+      }
+
+      // Calculate from timestamps if available (only if session is completed)
+      // Use startedAt to completedAt for actual processing duration
+      // Fall back to createdAt if startedAt is not available
+      if (currentSession?.status === 'completed') {
+        const startTime = currentSession?.startedAt || currentSession?.createdAt;
+        if (currentSession?.completedAt && startTime) {
+          const completedTime = new Date(currentSession.completedAt).getTime();
+          const startTimeMs = new Date(startTime).getTime();
+          const duration = completedTime - startTimeMs;
+          const seconds = Math.floor(duration / 1000);
+          if (seconds > 0) {
             return seconds;
           }
         }
       }
 
-      // Calculate from timestamps if available
-      if (currentSession?.completedAt && currentSession?.createdAt) {
-        const duration =
-          new Date(currentSession.completedAt).getTime() -
-          new Date(currentSession.createdAt).getTime();
-        return Math.floor(duration / 1000); // Convert to seconds
-      }
-
-      // Don't calculate from createdAt to now - that would keep growing
-      // Just return 0 if we don't have proper data
-
-      // Fallback: estimate based on video duration (roughly 2x realtime)
+      // Fallback: estimate based on video duration (roughly 2-3x realtime for processing)
+      // Only use this if we have no other data
       if (currentSession?.duration || actualVideoDuration) {
-        return Math.floor(
-          (currentSession?.duration || actualVideoDuration) / 2
-        );
+        const videoDuration = currentSession?.duration || actualVideoDuration;
+        // Processing typically takes 2-3x video duration (transcription + translation + TTS + sync)
+        return Math.floor(videoDuration * 2.5);
       }
 
       return 0;
@@ -301,7 +309,7 @@ const ResultsScreen = () => {
     fileSize:
       videoFileSize ||
       currentSession?.result?.outputSize ||
-      currentSession?.metadata?.outputSize ||
+      (currentSession?.metadata?.size) ||
       0, // in bytes
     originalSize:
       currentSession?.fileSize || currentSession?.metadata?.size || 0, // in bytes
@@ -366,10 +374,10 @@ const ResultsScreen = () => {
             }
           >
             <VideoPlayer
-              videoUrl={videoUrl}
+              videoUrl={videoUrl || null}
               originalUrl={
-                currentSession?.filePath
-                  ? `http://localhost:3001/uploads/${currentSession.filePath.split("/").pop()}`
+                currentSession?.sessionId
+                  ? `http://localhost:3001/original/${currentSession.sessionId}`
                   : null
               }
               durationMatch={qualityMetrics.durationMatch}
@@ -397,8 +405,8 @@ const ResultsScreen = () => {
               <RandomSpotChecker
                 videoUrl={videoUrl || ""}
                 originalUrl={
-                  currentSession?.filePath
-                    ? `http://localhost:3001/uploads/${currentSession.filePath.split("/").pop()}`
+                  currentSession?.sessionId
+                    ? `http://localhost:3001/original/${currentSession.sessionId}`
                     : ""
                 }
                 duration={videoDuration}

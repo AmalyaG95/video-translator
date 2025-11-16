@@ -3,9 +3,9 @@
 import grpc
 import warnings
 
-from proto import translation_pb2 as proto_dot_translation__pb2
+from . import translation_pb2 as translation__pb2
 
-GRPC_GENERATED_VERSION = '1.75.1'
+GRPC_GENERATED_VERSION = '1.76.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -18,7 +18,7 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + f' but the generated code in proto/translation_pb2_grpc.py depends on'
+        + ' but the generated code in translation_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
@@ -36,33 +36,33 @@ class TranslationServiceStub(object):
         """
         self.TranslateVideo = channel.unary_stream(
                 '/translation.TranslationService/TranslateVideo',
-                request_serializer=proto_dot_translation__pb2.TranslationRequest.SerializeToString,
-                response_deserializer=proto_dot_translation__pb2.TranslationProgress.FromString,
+                request_serializer=translation__pb2.TranslationRequest.SerializeToString,
+                response_deserializer=translation__pb2.TranslationProgress.FromString,
                 _registered_method=True)
         self.GetTranslationResult = channel.unary_unary(
                 '/translation.TranslationService/GetTranslationResult',
-                request_serializer=proto_dot_translation__pb2.ResultRequest.SerializeToString,
-                response_deserializer=proto_dot_translation__pb2.TranslationResult.FromString,
+                request_serializer=translation__pb2.ResultRequest.SerializeToString,
+                response_deserializer=translation__pb2.TranslationResult.FromString,
                 _registered_method=True)
         self.CancelTranslation = channel.unary_unary(
                 '/translation.TranslationService/CancelTranslation',
-                request_serializer=proto_dot_translation__pb2.CancelRequest.SerializeToString,
-                response_deserializer=proto_dot_translation__pb2.CancelResponse.FromString,
+                request_serializer=translation__pb2.CancelRequest.SerializeToString,
+                response_deserializer=translation__pb2.CancelResponse.FromString,
                 _registered_method=True)
         self.ControlTranslation = channel.unary_unary(
                 '/translation.TranslationService/ControlTranslation',
-                request_serializer=proto_dot_translation__pb2.ControlTranslationRequest.SerializeToString,
-                response_deserializer=proto_dot_translation__pb2.ControlTranslationResponse.FromString,
+                request_serializer=translation__pb2.ControlTranslationRequest.SerializeToString,
+                response_deserializer=translation__pb2.ControlTranslationResponse.FromString,
                 _registered_method=True)
         self.DetectLanguage = channel.unary_unary(
                 '/translation.TranslationService/DetectLanguage',
-                request_serializer=proto_dot_translation__pb2.LanguageDetectionRequest.SerializeToString,
-                response_deserializer=proto_dot_translation__pb2.LanguageDetectionResult.FromString,
+                request_serializer=translation__pb2.LanguageDetectionRequest.SerializeToString,
+                response_deserializer=translation__pb2.LanguageDetectionResult.FromString,
                 _registered_method=True)
         self.GetAIInsights = channel.unary_unary(
                 '/translation.TranslationService/GetAIInsights',
-                request_serializer=proto_dot_translation__pb2.AIInsightsRequest.SerializeToString,
-                response_deserializer=proto_dot_translation__pb2.AIInsightsResponse.FromString,
+                request_serializer=translation__pb2.AIInsightsRequest.SerializeToString,
+                response_deserializer=translation__pb2.AIInsightsResponse.FromString,
                 _registered_method=True)
 
 
@@ -110,33 +110,33 @@ def add_TranslationServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'TranslateVideo': grpc.unary_stream_rpc_method_handler(
                     servicer.TranslateVideo,
-                    request_deserializer=proto_dot_translation__pb2.TranslationRequest.FromString,
-                    response_serializer=proto_dot_translation__pb2.TranslationProgress.SerializeToString,
+                    request_deserializer=translation__pb2.TranslationRequest.FromString,
+                    response_serializer=translation__pb2.TranslationProgress.SerializeToString,
             ),
             'GetTranslationResult': grpc.unary_unary_rpc_method_handler(
                     servicer.GetTranslationResult,
-                    request_deserializer=proto_dot_translation__pb2.ResultRequest.FromString,
-                    response_serializer=proto_dot_translation__pb2.TranslationResult.SerializeToString,
+                    request_deserializer=translation__pb2.ResultRequest.FromString,
+                    response_serializer=translation__pb2.TranslationResult.SerializeToString,
             ),
             'CancelTranslation': grpc.unary_unary_rpc_method_handler(
                     servicer.CancelTranslation,
-                    request_deserializer=proto_dot_translation__pb2.CancelRequest.FromString,
-                    response_serializer=proto_dot_translation__pb2.CancelResponse.SerializeToString,
+                    request_deserializer=translation__pb2.CancelRequest.FromString,
+                    response_serializer=translation__pb2.CancelResponse.SerializeToString,
             ),
             'ControlTranslation': grpc.unary_unary_rpc_method_handler(
                     servicer.ControlTranslation,
-                    request_deserializer=proto_dot_translation__pb2.ControlTranslationRequest.FromString,
-                    response_serializer=proto_dot_translation__pb2.ControlTranslationResponse.SerializeToString,
+                    request_deserializer=translation__pb2.ControlTranslationRequest.FromString,
+                    response_serializer=translation__pb2.ControlTranslationResponse.SerializeToString,
             ),
             'DetectLanguage': grpc.unary_unary_rpc_method_handler(
                     servicer.DetectLanguage,
-                    request_deserializer=proto_dot_translation__pb2.LanguageDetectionRequest.FromString,
-                    response_serializer=proto_dot_translation__pb2.LanguageDetectionResult.SerializeToString,
+                    request_deserializer=translation__pb2.LanguageDetectionRequest.FromString,
+                    response_serializer=translation__pb2.LanguageDetectionResult.SerializeToString,
             ),
             'GetAIInsights': grpc.unary_unary_rpc_method_handler(
                     servicer.GetAIInsights,
-                    request_deserializer=proto_dot_translation__pb2.AIInsightsRequest.FromString,
-                    response_serializer=proto_dot_translation__pb2.AIInsightsResponse.SerializeToString,
+                    request_deserializer=translation__pb2.AIInsightsRequest.FromString,
+                    response_serializer=translation__pb2.AIInsightsResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -164,8 +164,8 @@ class TranslationService(object):
             request,
             target,
             '/translation.TranslationService/TranslateVideo',
-            proto_dot_translation__pb2.TranslationRequest.SerializeToString,
-            proto_dot_translation__pb2.TranslationProgress.FromString,
+            translation__pb2.TranslationRequest.SerializeToString,
+            translation__pb2.TranslationProgress.FromString,
             options,
             channel_credentials,
             insecure,
@@ -191,8 +191,8 @@ class TranslationService(object):
             request,
             target,
             '/translation.TranslationService/GetTranslationResult',
-            proto_dot_translation__pb2.ResultRequest.SerializeToString,
-            proto_dot_translation__pb2.TranslationResult.FromString,
+            translation__pb2.ResultRequest.SerializeToString,
+            translation__pb2.TranslationResult.FromString,
             options,
             channel_credentials,
             insecure,
@@ -218,8 +218,8 @@ class TranslationService(object):
             request,
             target,
             '/translation.TranslationService/CancelTranslation',
-            proto_dot_translation__pb2.CancelRequest.SerializeToString,
-            proto_dot_translation__pb2.CancelResponse.FromString,
+            translation__pb2.CancelRequest.SerializeToString,
+            translation__pb2.CancelResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -245,8 +245,8 @@ class TranslationService(object):
             request,
             target,
             '/translation.TranslationService/ControlTranslation',
-            proto_dot_translation__pb2.ControlTranslationRequest.SerializeToString,
-            proto_dot_translation__pb2.ControlTranslationResponse.FromString,
+            translation__pb2.ControlTranslationRequest.SerializeToString,
+            translation__pb2.ControlTranslationResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -272,8 +272,8 @@ class TranslationService(object):
             request,
             target,
             '/translation.TranslationService/DetectLanguage',
-            proto_dot_translation__pb2.LanguageDetectionRequest.SerializeToString,
-            proto_dot_translation__pb2.LanguageDetectionResult.FromString,
+            translation__pb2.LanguageDetectionRequest.SerializeToString,
+            translation__pb2.LanguageDetectionResult.FromString,
             options,
             channel_credentials,
             insecure,
@@ -299,8 +299,8 @@ class TranslationService(object):
             request,
             target,
             '/translation.TranslationService/GetAIInsights',
-            proto_dot_translation__pb2.AIInsightsRequest.SerializeToString,
-            proto_dot_translation__pb2.AIInsightsResponse.FromString,
+            translation__pb2.AIInsightsRequest.SerializeToString,
+            translation__pb2.AIInsightsResponse.FromString,
             options,
             channel_credentials,
             insecure,

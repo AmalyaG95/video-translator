@@ -51,20 +51,39 @@ async def serve():
     await server.start()
     
     # Graceful shutdown handler
+    shutdown_event = asyncio.Event()
+    
     async def shutdown(sig):
+        if shutdown_event.is_set():
+            logger.info(f"Ignoring duplicate shutdown signal: {sig.name}")
+            return
+        shutdown_event.set()
         logger.info(f"Received shutdown signal: {sig.name}")
-        await server.stop(grace=5)
-        logger.info("Server stopped gracefully")
+        try:
+            await server.stop(grace=5)
+            logger.info("Server stopped gracefully")
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
+        # Don't call sys.exit() here - let the event loop handle it naturally
+        # The container will restart based on restart policy
     
     # Register shutdown handlers
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(
-            sig,
-            lambda s=sig: asyncio.create_task(shutdown(s))
-        )
+        try:
+            loop.add_signal_handler(
+                sig,
+                lambda s=sig: asyncio.create_task(shutdown(s))
+            )
+        except (NotImplementedError, RuntimeError):
+            # Signal handlers not supported on this platform
+            logger.warning(f"Signal handler for {sig.name} not available on this platform")
     
-    await server.wait_for_termination()
+    try:
+        await server.wait_for_termination()
+    except KeyboardInterrupt:
+        logger.info("Received KeyboardInterrupt, shutting down...")
+        await shutdown(signal.SIGTERM)
 
 
 if __name__ == '__main__':

@@ -15,11 +15,12 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Service configurations
+# Try both .data/logs (from start-app.sh) and logs/ directories
 SERVICES=(
-    "nestjs:NestJS API:3001:logs/nestjs-api.log"
-    "python-ml:Python ML:50051:logs/python-ml.log"
-    "python-http:Python HTTP:50052:logs/python-http.log"
-    "frontend:Frontend:3000:logs/frontend.log"
+    "nestjs:NestJS API:3001:.data/logs/nestjs-api.log:logs/nestjs-api.log"
+    "python-ml:Python ML:50051:.data/logs/python-ml.log:logs/python-ml.log"
+    "python-http:Python HTTP:50052:.data/logs/python-http.log:logs/python-http.log"
+    "frontend:Frontend:3000:.data/logs/frontend.log:logs/frontend.log"
 )
 
 # Function to check if service is running
@@ -49,7 +50,7 @@ show_status() {
     local all_running=true
     
     for service_config in "${SERVICES[@]}"; do
-        IFS=':' read -r name display_name port log_file <<< "$service_config"
+        IFS=':' read -r name display_name port primary_log fallback_log <<< "$service_config"
         if ! check_service "$display_name" "$port"; then
             all_running=false
         fi
@@ -62,17 +63,35 @@ show_status() {
     fi
 }
 
+# Function to find log file (check multiple locations)
+find_log_file() {
+    local primary_log=$1
+    local fallback_log=$2
+    
+    if [ -f "$primary_log" ]; then
+        echo "$primary_log"
+        return 0
+    elif [ -f "$fallback_log" ]; then
+        echo "$fallback_log"
+        return 0
+    else
+        return 1
+    fi
+}
+
 # Function to display logs for a specific service
 show_logs() {
     local service_name=$1
-    local log_file=$2
-    local color=$3
+    local primary_log=$2
+    local fallback_log=$3
+    local color=$4
     
-    if [ -f "$log_file" ]; then
-        echo -e "\n${color}=== $service_name LOGS (last 20 lines) ===${NC}"
+    local log_file
+    if log_file=$(find_log_file "$primary_log" "$fallback_log"); then
+        echo -e "\n${color}=== $service_name LOGS (last 20 lines from $log_file) ===${NC}"
         tail -20 "$log_file" | sed "s/^/${color}[$service_name]${NC} /"
     else
-        echo -e "\n${RED}Log file not found: $log_file${NC}"
+        echo -e "\n${RED}Log file not found: tried $primary_log and $fallback_log${NC}"
     fi
 }
 
@@ -86,9 +105,13 @@ monitor_logs() {
     
     # Start tail processes for each log file
     for service_config in "${SERVICES[@]}"; do
-        IFS=':' read -r name display_name port log_file <<< "$service_config"
-        if [ -f "$log_file" ]; then
+        IFS=':' read -r name display_name port primary_log fallback_log <<< "$service_config"
+        local log_file
+        if log_file=$(find_log_file "$primary_log" "$fallback_log"); then
+            echo -e "${GREEN}Following $display_name logs from: $log_file${NC}"
             tail -f "$log_file" | sed "s/^/[$name] /" >> "$temp_file" &
+        else
+            echo -e "${YELLOW}Warning: No log file found for $display_name (tried: $primary_log, $fallback_log)${NC}"
         fi
     done
     
@@ -149,19 +172,19 @@ case "${1:-monitor}" in
         show_status
         echo -e "\n${BLUE}=== RECENT LOGS ===${NC}"
         for service_config in "${SERVICES[@]}"; do
-            IFS=':' read -r name display_name port log_file <<< "$service_config"
+            IFS=':' read -r name display_name port primary_log fallback_log <<< "$service_config"
             case "$name" in
                 "nestjs")
-                    show_logs "$display_name" "$log_file" "$BLUE"
+                    show_logs "$display_name" "$primary_log" "$fallback_log" "$BLUE"
                     ;;
                 "python-ml")
-                    show_logs "$display_name" "$log_file" "$GREEN"
+                    show_logs "$display_name" "$primary_log" "$fallback_log" "$GREEN"
                     ;;
                 "python-http")
-                    show_logs "$display_name" "$log_file" "$PURPLE"
+                    show_logs "$display_name" "$primary_log" "$fallback_log" "$PURPLE"
                     ;;
                 "frontend")
-                    show_logs "$display_name" "$log_file" "$YELLOW"
+                    show_logs "$display_name" "$primary_log" "$fallback_log" "$YELLOW"
                     ;;
             esac
         done
@@ -171,16 +194,16 @@ case "${1:-monitor}" in
         monitor_logs
         ;;
     "nestjs")
-        show_logs "NestJS API" "logs/nestjs-api.log" "$BLUE"
+        show_logs "NestJS API" ".data/logs/nestjs-api.log" "logs/nestjs-api.log" "$BLUE"
         ;;
     "python-ml")
-        show_logs "Python ML" "logs/python-ml.log" "$GREEN"
+        show_logs "Python ML" ".data/logs/python-ml.log" "logs/python-ml.log" "$GREEN"
         ;;
     "python-http")
-        show_logs "Python HTTP" "logs/python-http.log" "$PURPLE"
+        show_logs "Python HTTP" ".data/logs/python-http.log" "logs/python-http.log" "$PURPLE"
         ;;
     "frontend")
-        show_logs "Frontend" "logs/frontend.log" "$YELLOW"
+        show_logs "Frontend" ".data/logs/frontend.log" "logs/frontend.log" "$YELLOW"
         ;;
     "help"|"-h"|"--help")
         show_help

@@ -18,7 +18,7 @@ function SampleChunkPreview({
   onDurationChange,
 }: SampleChunkPreviewProps) {
   return (
-    <div className="card col-span-2 mx-auto flex max-w-4xl flex-col gap-4">
+    <div className="card col-span-2 mx-auto flex max-w-4xl flex-col gap-4 relative z-10">
       <div className="flex items-center justify-between">
         <h3 className="text-xl font-semibold text-gray-900 dark:text-white">
           Sample Chunk

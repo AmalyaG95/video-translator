@@ -67,15 +67,21 @@ export default function VideoPlayer({
         )}
 
         <VideoPreview
-          src={showOriginal && originalUrl ? originalUrl : videoUrl}
+          src={(showOriginal && originalUrl ? originalUrl : videoUrl) || ''}
           title={showOriginal ? "Original Video" : "Final Result"}
           onPlay={() => setIsPlaying(true)}
           onPause={() => setIsPlaying(false)}
           subtitleUrl={
-            showOriginal ? originalSubtitleUrl : translatedSubtitleUrl
+            // Only show player-rendered subtitles for original video
+            // Translated video already has subtitles embedded (burned-in)
+            showOriginal ? originalSubtitleUrl : null
           }
           subtitleLabel={
-            showOriginal ? "Original Subtitles" : "Translated Subtitles"
+            showOriginal ? "Original Subtitles" : undefined
+          }
+          embeddedSubtitleUrl={
+            // Pass translated subtitle URL for embedded subtitle tracking
+            !showOriginal ? translatedSubtitleUrl : null
           }
         />
       </div>

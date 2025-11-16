@@ -39,8 +39,13 @@ const STAGE_ICONS = {
   initialization: Database,
   video_analysis: Cpu,
   speech_to_text: Zap,
+  transcription: Zap,
   translation: Database,
   text_to_speech: Zap,
+  tts: Zap,
+  audio_sync: CheckCircle,
+  audio_synchronization: CheckCircle,
+  video_combination: Cpu,
   lip_sync: CheckCircle,
   finalization: CheckCircle,
   system: Cpu,
@@ -79,12 +84,62 @@ export function ProcessLogsPanel({ logs, error }: ProcessLogsPanelProps) {
   }, [logs, filter, searchTerm]);
 
   const formatTimestamp = (timestamp: string) => {
-    return new Date(timestamp).toLocaleTimeString();
+    try {
+      const date = new Date(timestamp);
+      const now = new Date();
+      const diffMs = now.getTime() - date.getTime();
+      const diffSecs = Math.floor(diffMs / 1000);
+      const diffMins = Math.floor(diffSecs / 60);
+      
+      if (diffSecs < 10) return "just now";
+      if (diffSecs < 60) return `${diffSecs}s ago`;
+      if (diffMins < 60) return `${diffMins}m ago`;
+      
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch {
+      return timestamp;
+    }
+  };
+
+  const formatStageName = (stage: string) => {
+    return stage
+      .split('_')
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+      .join(' ');
+  };
+
+  const formatMessage = (message: string): React.ReactNode => {
+    // Format progress messages nicely
+    if (message.includes('|')) {
+      const parts = message.split('|').map(p => p.trim());
+      return (
+        <div className="space-y-1">
+          {parts.map((part, idx) => (
+            <div key={idx} className={idx === 0 ? "font-medium" : "text-xs opacity-80"}>
+              {part}
+            </div>
+          ))}
+        </div>
+      );
+    }
+    return <p>{message}</p>;
   };
 
   const getStageIcon = (stage: string) => {
     const Icon = STAGE_ICONS[stage as keyof typeof STAGE_ICONS] || Info;
     return <Icon className="h-4 w-4 text-gray-900 dark:text-white" />;
+  };
+
+  const getStageColor = (stage: string) => {
+    const colors: Record<string, string> = {
+      initialization: "text-blue-600 dark:text-blue-400",
+      transcription: "text-purple-600 dark:text-purple-400",
+      translation: "text-indigo-600 dark:text-indigo-400",
+      tts: "text-green-600 dark:text-green-400",
+      audio_sync: "text-cyan-600 dark:text-cyan-400",
+      video_combination: "text-orange-600 dark:text-orange-400",
+    };
+    return colors[stage] || "text-gray-600 dark:text-gray-400";
   };
 
   const getLevelIcon = (level: string) => {
@@ -226,21 +281,36 @@ export function ProcessLogsPanel({ logs, error }: ProcessLogsPanelProps) {
                           {getLevelIcon(log.level)}
                         </div>
                         <div className="min-w-0 flex-1">
-                          <div className="flex items-center justify-between">
-                            <span className="text-sm font-medium text-gray-900 dark:text-white">
-                              {log.stage.replace(/_/g, " ").toUpperCase()}
-                            </span>
-                            <span className="text-xs text-gray-500 dark:text-gray-400">
+                          <div className="flex items-center justify-between mb-1">
+                            <div className="flex items-center space-x-2">
+                              <span className={`text-sm font-semibold ${getStageColor(log.stage)}`}>
+                                {formatStageName(log.stage)}
+                              </span>
+                              {log.level !== "info" && (
+                                <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                                  log.level === "error" 
+                                    ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+                                    : log.level === "warning"
+                                    ? "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400"
+                                    : log.level === "success"
+                                    ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                                    : "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300"
+                                }`}>
+                                  {log.level.toUpperCase()}
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">
                               {formatTimestamp(log.timestamp)}
                             </span>
                           </div>
-                          <p className="mt-1 text-sm text-gray-700 dark:text-gray-300">
-                            {log.message}
-                          </p>
+                          <div className="mt-1 text-sm text-gray-700 dark:text-gray-300">
+                            {formatMessage(log.message)}
+                          </div>
                           {log.chunkId && (
-                            <div className="mt-1">
-                              <span className="inline-block rounded bg-gray-100 px-2 py-1 text-xs dark:bg-gray-800">
-                                {log.chunkId}
+                            <div className="mt-2">
+                              <span className="inline-block rounded-md bg-blue-50 dark:bg-blue-900/30 px-2 py-1 text-xs font-medium text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
+                                Chunk: {log.chunkId}
                               </span>
                             </div>
                           )}

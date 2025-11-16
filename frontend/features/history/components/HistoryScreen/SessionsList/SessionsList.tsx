@@ -4,6 +4,7 @@ import { useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslationStore } from "@/stores/translationStore";
 import SessionCard from "../SessionCard/SessionCard";
+import type { ProcessingSession, SessionStatus } from "@/shared/types/session.types";
 
 interface Session {
   sessionId: string;
@@ -12,7 +13,12 @@ interface Session {
   targetLang?: string;
   progress?: number;
   createdAt?: Date | string;
+  updatedAt?: Date | string;
   currentStep?: string;
+  message?: string;
+  fileName?: string;
+  fileSize?: number;
+  duration?: number;
 }
 
 interface SessionsListProps {
@@ -35,7 +41,22 @@ export default function SessionsList({
   const handleViewSession = async (session: Session) => {
     setViewingSessions(prev => new Set(prev).add(session.sessionId));
     try {
-      setCurrentSession(session);
+      // Convert Session to ProcessingSession with required fields
+      const processingSession: ProcessingSession = {
+        sessionId: session.sessionId,
+        status: session.status as SessionStatus,
+        progress: session.progress ?? 0,
+        currentStep: session.currentStep ?? "initialization",
+        message: session.message ?? "",
+        sourceLang: session.sourceLang ?? "en",
+        targetLang: session.targetLang ?? "en",
+        fileName: session.fileName,
+        fileSize: session.fileSize,
+        duration: session.duration,
+        createdAt: session.createdAt ? (typeof session.createdAt === 'string' ? new Date(session.createdAt) : session.createdAt) : undefined,
+        updatedAt: session.updatedAt ? (typeof session.updatedAt === 'string' ? new Date(session.updatedAt) : session.updatedAt) : undefined,
+      };
+      setCurrentSession(processingSession);
       // Navigate based on session status
       if (session.status === "completed") {
         router.push(`/results/${session.sessionId}`);

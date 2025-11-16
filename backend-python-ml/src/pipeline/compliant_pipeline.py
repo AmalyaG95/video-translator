@@ -6,6 +6,8 @@ Meets all strict requirements from .cursorrules
 
 import asyncio
 import math
+import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -70,10 +72,23 @@ class CompliantVideoTranslationPipeline:
                          'AI video translation pipeline started with optimal configuration', 
                          'high', {'model_size': self.model_size, 'device': self.device})
         
-        # TTS rate limiting to prevent 403 errors
+        # TTS rate limiting configuration from config
         self._tts_lock = asyncio.Lock()
         self._last_tts_time = 0
-        self._min_tts_delay = 2.0  # Minimum 2 seconds between TTS requests
+        tts_config = config.get('tts', {})
+        rate_limit_config = tts_config.get('rate_limiting', {})
+        self._min_tts_delay = rate_limit_config.get('min_delay_seconds', 0.2)
+        self._default_tts_delay = rate_limit_config.get('default_delay_seconds', 0.5)
+        self._inter_segment_delay = rate_limit_config.get('inter_segment_delay_seconds', 0.5)
+        self._adaptive_delay = rate_limit_config.get('adaptive_delay', True)
+        self._delay_increase_factor = rate_limit_config.get('delay_increase_factor', 1.5)
+        self._delay_decrease_factor = rate_limit_config.get('delay_decrease_factor', 0.9)
+        self._min_error_interval = rate_limit_config.get('min_error_interval', 10)
+        
+        # Dynamic delay tracking
+        self._current_tts_delay = self._default_tts_delay
+        self._rate_limit_error_count = 0
+        self._segment_count_since_last_error = 0
         
         # Quality metrics tracking
         self.lufs_values = []
@@ -124,6 +139,37 @@ class CompliantVideoTranslationPipeline:
             'speech_ratio': speech_ratio,
             'total_segments': len(segments)
         }
+
+    def _estimate_initialization_time(self) -> int:
+        """Estimate initialization time in seconds based on model size and device"""
+        import torch
+        # Model size loading times (approximate, in seconds)
+        model_times = {
+            'tiny': {'cpu': 5, 'cuda': 3},
+            'base': {'cpu': 15, 'cuda': 8},
+            'small': {'cpu': 30, 'cuda': 15},
+            'medium': {'cpu': 60, 'cuda': 30},
+            'large': {'cpu': 120, 'cuda': 60},
+            'large-v2': {'cpu': 150, 'cuda': 75},
+            'large-v3': {'cpu': 180, 'cuda': 90},
+        }
+        
+        model_size = self.model_size
+        device_type = 'cuda' if self.device == 'cuda' and torch.cuda.is_available() else 'cpu'
+        
+        # Get base time for model loading
+        base_time = model_times.get(model_size, {}).get(device_type, 30)  # Default 30s
+        
+        # Add time for translation model loading (varies by target language)
+        translation_model_time = 5  # Approximate time to load translation model
+        
+        # Add overhead for system initialization
+        overhead = 3
+        
+        total_estimated = base_time + translation_model_time + overhead
+        
+        logger.info(f"Estimated initialization time: {total_estimated}s (model: {model_size}, device: {device_type})")
+        return total_estimated
 
     def _analyze_voice_quality(self, audio_segments: List[AudioSegment]) -> Dict:
         """Analyze voice quality metrics"""
@@ -330,10 +376,22 @@ class CompliantVideoTranslationPipeline:
                     )
                     continue
                 
+                # Skip segments with empty text
+                segment_text = segment.text.strip()
+                if not segment_text:
+                    structured_logger.log(
+                        stage="segment_filtered",
+                        chunk_id=f"{chunk_id}_seg_{i}",
+                        status="skipped",
+                        reason="empty_text",
+                        duration_ms=segment_duration * 1000
+                    )
+                    continue
+                
                 segment_data = {
                     'start': segment.start,
                     'end': segment.end,
-                    'text': segment.text.strip(),
+                    'text': segment_text,
                     'words': [{'word': word.word, 'start': word.start, 'end': word.end} 
                              for word in segment.words] if hasattr(segment, 'words') else []
                 }
@@ -349,12 +407,21 @@ class CompliantVideoTranslationPipeline:
             
             duration_ms = (time.time() - start_time) * 1000
             structured_logger.log_stage_complete("transcription", chunk_id, duration_ms)
-            logger.info(f"Transcribed {len(transcript_segments)} segments")
+            
+            if not transcript_segments or len(transcript_segments) == 0:
+                error_msg = f"Transcription completed but returned 0 segments. Audio may have no speech, wrong language, or transcription failed."
+                logger.error(f"❌ {error_msg}")
+                structured_logger.log_stage_error("transcription", error_msg, chunk_id)
+                raise ValueError(error_msg)
+            
+            logger.info(f"✅ Transcribed {len(transcript_segments)} segments successfully")
             return transcript_segments
             
         except Exception as e:
-            structured_logger.log_stage_error("transcription", str(e), chunk_id)
-            return []
+            error_msg = f"Transcription failed: {str(e)}"
+            logger.error(f"❌ {error_msg}", exc_info=True)
+            structured_logger.log_stage_error("transcription", error_msg, chunk_id)
+            raise  # Re-raise to fail the pipeline instead of returning empty list
     
     async def detect_language(self, video_path: Path) -> Tuple[str, float]:
         """Detect language from video file using Whisper"""
@@ -437,6 +504,15 @@ class CompliantVideoTranslationPipeline:
             structured_logger.log_stage_start("translation", chunk_id)
             start_time = time.time()
             
+            # If source and target languages are the same, return text as-is (but still log it)
+            if source_lang == target_lang:
+                logger.info(f"Source and target languages are the same ({source_lang}), returning text without translation")
+                structured_logger.log_stage_complete("translation", chunk_id, (time.time() - start_time) * 1000)
+                return text.strip()
+            
+            # Translation is ENABLED - process all segments normally
+            logger.debug(f"Translating from {source_lang} to {target_lang}")
+            
             # Create model key and map language codes
             model_key = f"{source_lang}-{target_lang}"
             
@@ -512,17 +588,17 @@ class CompliantVideoTranslationPipeline:
                     
                     with torch.no_grad():
                         generate_kwargs = {
-                            'max_length': config.get('translation.max_length', 300),  # Longer for better context
+                            'max_length': config.get('translation.max_length', 256),  # Reduced from 300 to prevent extra words
                             'num_beams': 8,  # More beams for better quality
                             'early_stopping': True,
                             'do_sample': True,
-                            'temperature': 0.5,  # Lower for more accuracy
+                            'temperature': 0.3,  # Reduced from 0.5 for more deterministic, accurate translations
                             'top_p': 0.9,
                             'top_k': 40,  # More diverse sampling
-                            'repetition_penalty': 1.2,  # Higher to prevent repetition
-                            'length_penalty': 1.1,  # Encourage appropriate length
+                            'repetition_penalty': 1.3,  # Increased from 1.2 to prevent word repetition
+                            'length_penalty': 0.95,  # Reduced from 1.1 to discourage extra length
                             'no_repeat_ngram_size': 2,  # Prevent 2-gram repetition
-                            'min_length': 15,  # Ensure meaningful length
+                            'min_length': 0,  # Removed minimum length constraint to prevent forced extra words
                             'pad_token_id': tokenizer.eos_token_id,
                         }
                         
@@ -540,8 +616,16 @@ class CompliantVideoTranslationPipeline:
             translated_length = len(translated_text)
             original_length = len(text)
             
-            # Check if condensation is needed
+            # Validate translation length - warn if significantly longer than original
             length_ratio = translated_length / original_length if original_length > 0 else 1.0
+            if length_ratio > 1.5:
+                logger.warning(f"⚠️  Translation is {length_ratio:.2f}x longer than original (original: {original_length} chars, translated: {translated_length} chars). This may indicate extra words.")
+                logger.warning(f"   Original text: '{text[:100]}{'...' if len(text) > 100 else ''}'")
+                logger.warning(f"   Translated text: '{translated_text[:100]}{'...' if len(translated_text) > 100 else ''}'")
+            elif length_ratio > 1.2:
+                logger.info(f"Translation is {length_ratio:.2f}x longer than original (original: {original_length} chars, translated: {translated_length} chars)")
+            
+            # Check if condensation is needed
             condensation_threshold = config.get('translation.condensation_threshold', 1.2)
             
             if length_ratio > condensation_threshold:
@@ -748,6 +832,20 @@ class CompliantVideoTranslationPipeline:
                     error_str = str(e).lower()
                     if "403" in error_str or "rate limit" in error_str or "forbidden" in error_str:
                         # Special handling for 403 rate limiting errors
+                        self._rate_limit_error_count += 1
+                        self._segment_count_since_last_error = 0  # Reset counter on error
+                        
+                        # Adaptively increase delay if enabled
+                        if self._adaptive_delay:
+                            self._current_tts_delay = min(
+                                self._current_tts_delay * self._delay_increase_factor,
+                                4.0  # Cap at 4 seconds
+                            )
+                            logger.warning(
+                                f"TTS rate limiting detected (error #{self._rate_limit_error_count}). "
+                                f"Increased delay to {self._current_tts_delay:.2f}s"
+                            )
+                        
                         logger.warning(f"TTS rate limiting detected (attempt {attempt + 1}/{max_retries}): {e}")
                         if attempt < max_retries - 1:
                             # Exponential backoff with longer delays for rate limiting
@@ -881,16 +979,68 @@ class CompliantVideoTranslationPipeline:
             processed_segments = []
             early_preview_generated = False
             
+            # Validate segments before processing
+            if not segments or len(segments) == 0:
+                logger.error(f"❌ No segments to process! Segments list is empty.")
+                raise ValueError("No segments available for translation - transcription may have failed or video has no speech")
+            
+            logger.info(f"📊 Starting sequential processing of {len(segments)} segments")
+            
+            # Profile overall processing
+            processing_start_time = time.time()
+            segment_times = []
+            
             for i, segment in enumerate(segments):
+                # Validate segment has text before processing
+                segment_text = segment.get('text', '').strip()
+                if not segment_text:
+                    logger.warning(f"⚠️ Skipping segment {i+1}/{len(segments)}: empty text at {segment.get('start', '?')}s")
+                    # Add segment with empty translated text so it doesn't break the pipeline
+                    segment['translated_text'] = ''
+                    segment['tts_path'] = None
+                    processed_segments.append(segment)
+                    continue
+                
                 # Process ONE segment at a time to avoid rate limiting
+                segment_processing_start = time.time()
                 try:
+                    logger.info(f"🔄 Processing segment {i+1}/{len(segments)}: start={segment.get('start', '?')}s, text='{segment_text[:50]}...'")
                     result = await self._process_single_segment_parallel(segment, target_lang, temp_dir, session_id)
                     if result and isinstance(result, dict):
                         processed_segments.append(result)
+                        logger.debug(f"✅ Segment {i+1} processed successfully, total processed: {len(processed_segments)}")
+                    else:
+                        logger.warning(f"⚠️ Segment {i+1} returned None or invalid result: {result}")
                     
-                    # Add small delay between segments to avoid rate limiting
-                    if i < len(segments) - 1:  # Don't delay after last segment
-                        await asyncio.sleep(0.5)  # 500ms delay between segments
+                    # REMOVED: Inter-segment delay - we already have pre-TTS delay in _process_single_segment_parallel
+                    # This was causing DOUBLE delays (pre-TTS + inter-segment) = 1s+ wasted per segment
+                    
+                    # Adaptive delay adjustment: gradually decrease delay when no errors (OPTIMIZED)
+                    self._segment_count_since_last_error += 1
+                    if self._adaptive_delay and self._segment_count_since_last_error >= self._min_error_interval:
+                        # If no rate limit errors for N segments, aggressively reduce delay
+                        new_delay = self._current_tts_delay * self._delay_decrease_factor
+                        if new_delay >= self._min_tts_delay:
+                            old_delay = self._current_tts_delay
+                            self._current_tts_delay = new_delay
+                            logger.info(f"🔧 SPEED BOOST: Reduced delay from {old_delay:.2f}s to {self._current_tts_delay:.2f}s (no errors for {self._segment_count_since_last_error} segments)")
+                        self._segment_count_since_last_error = 0
+                    
+                    segment_total_time = time.time() - segment_processing_start
+                    segment_times.append(segment_total_time)
+                    
+                    # Log progress every 10 segments
+                    if (i + 1) % 10 == 0:
+                        avg_time = sum(segment_times) / len(segment_times)
+                        elapsed = time.time() - processing_start_time
+                        remaining_segments = len(segments) - (i + 1)
+                        estimated_remaining = avg_time * remaining_segments
+                        logger.info(
+                            f"📈 Progress: {i + 1}/{len(segments)} segments processed. "
+                            f"Avg: {avg_time:.2f}s/segment, "
+                            f"Elapsed: {elapsed/60:.1f}min, "
+                            f"Est. remaining: {estimated_remaining/60:.1f}min"
+                        )
                 except Exception as e:
                     logger.error(f"Failed to process segment {i}: {e}")
                     # Keep original segment if processing failed
@@ -921,6 +1071,21 @@ class CompliantVideoTranslationPipeline:
                         early_preview_available=early_preview_generated
                     )
             
+            # Calculate final performance statistics
+            processing_total_time = time.time() - processing_start_time
+            avg_segment_time = sum(segment_times) / len(segment_times) if segment_times else 0
+            min_segment_time = min(segment_times) if segment_times else 0
+            max_segment_time = max(segment_times) if segment_times else 0
+            
+            # Log comprehensive performance summary
+            logger.info(
+                f"📊 Processing Summary: {len(segments)} segments processed in {processing_total_time/60:.2f} minutes\n"
+                f"   Average time per segment: {avg_segment_time:.2f}s\n"
+                f"   Min/Max segment time: {min_segment_time:.2f}s / {max_segment_time:.2f}s\n"
+                f"   Total delay overhead: ~{len(segments) * 0.5:.1f}s ({len(segments) * 0.5 / processing_total_time * 100:.1f}% of total time)\n"
+                f"   Effective processing rate: {len(segments) / processing_total_time * 60:.1f} segments/minute"
+            )
+            
             # Generate final AI insights based on processing results
             tts_success_count = len([s for s in processed_segments if s.get("tts_path")])
             tts_success_rate = tts_success_count / len(processed_segments) if processed_segments else 0
@@ -930,7 +1095,11 @@ class CompliantVideoTranslationPipeline:
                             'high', {
                                 'total_segments': len(processed_segments),
                                 'tts_success_rate': tts_success_rate,
-                                'early_preview_generated': early_preview_generated
+                                'early_preview_generated': early_preview_generated,
+                                'total_processing_time_seconds': processing_total_time,
+                                'avg_segment_time_seconds': avg_segment_time,
+                                'processing_rate_segments_per_minute': len(segments) / processing_total_time * 60 if processing_total_time > 0 else 0,
+                                'delay_overhead_percent': (len(segments) * 0.5 / processing_total_time * 100) if processing_total_time > 0 else 0
                             })
             
             # Add quality assessment insight
@@ -966,6 +1135,13 @@ class CompliantVideoTranslationPipeline:
             
         except Exception as e:
             structured_logger.log_stage_error("parallel_processing", str(e), chunk_id)
+            logger.error(f"❌ Critical error in segment processing: {e}", exc_info=True)
+            # If we have any processed segments, return them; otherwise re-raise to fail the pipeline
+            if processed_segments and len(processed_segments) > 0:
+                logger.warning(f"Returning {len(processed_segments)} partially processed segments due to error")
+                return processed_segments
+            # If no segments were processed, re-raise to fail the pipeline
+            logger.error(f"❌ No segments processed before exception occurred. Failing pipeline.")
             raise
 
     async def _generate_early_preview(self, video_path: Path, processed_segments: List[Dict], 
@@ -1133,24 +1309,63 @@ class CompliantVideoTranslationPipeline:
     async def _process_single_segment_parallel(self, segment: Dict, target_lang: str, 
                                              temp_dir: Path, chunk_id: str) -> Dict:
         """Process a single segment for translation and TTS"""
+        segment_start_time = time.time()
+        
         try:
-            # Translate text
+            # Validate segment text exists
+            segment_text = segment.get('text', '').strip()
+            if not segment_text:
+                logger.warning(f"⚠️ Segment {segment.get('start', '?')}s has empty text, skipping translation")
+                segment['translated_text'] = ''
+                segment['tts_path'] = None
+                return segment
+            
+            # SPEED OPTIMIZATION: Translate first (CPU-bound, fast)
+            translation_start = time.time()
             translated_text = await self.translate_text(
-                segment['text'], 
+                segment_text, 
                 segment.get('source_lang', 'en'), 
                 target_lang
             )
+            translation_time = time.time() - translation_start
             
-            # Generate TTS audio
+            # Validate translated text is not empty
+            if not translated_text or not translated_text.strip():
+                logger.error(f"❌ Translation returned empty text for segment {segment.get('start', '?')}s. Original text: '{segment_text[:50]}...'")
+                logger.error(f"   This segment will be skipped. Check translation model loading and configuration.")
+                # Don't use original text - mark as failed so validation catches it
+                segment['translated_text'] = ''  # Empty to signal failure
+                segment['tts_path'] = None
+                segment['translation_failed'] = True
+                return segment
+            
+            # Generate TTS audio (network I/O bound - slower)
             segment_id = f"{chunk_id}_{int(segment['start']*1000)}"
             tts_path = temp_dir / f"tts_{segment_id}.wav"
             
             logger.info(f"🎙️ Generating TTS for segment {segment['start']:.2f}s: {translated_text[:50]}... -> {tts_path}")
             
-            # Add small delay to avoid rate limiting (Microsoft Edge-TTS)
-            await asyncio.sleep(0.5)
+            # OPTIMIZED: Minimal delay before TTS (reduced from 0.5s default to 0.2s, adaptive)
+            delay_start = time.time()
+            if self._current_tts_delay > 0:
+                await asyncio.sleep(self._current_tts_delay)
+            delay_time = time.time() - delay_start
             
+            # Profile TTS generation time (this is the slow part - network I/O)
+            tts_start = time.time()
             tts_success = await self.generate_speech(translated_text, target_lang, tts_path)
+            tts_time = time.time() - tts_start
+            
+            total_segment_time = time.time() - segment_start_time
+            
+            # Log performance metrics
+            logger.info(
+                f"⏱️ Segment {segment['start']:.2f}s performance: "
+                f"translation={translation_time:.2f}s, "
+                f"delay={delay_time:.2f}s, "
+                f"tts={tts_time:.2f}s, "
+                f"total={total_segment_time:.2f}s"
+            )
             
             if tts_success:
                 # Verify file exists before loading
@@ -1194,12 +1409,20 @@ class CompliantVideoTranslationPipeline:
             structured_logger.log_stage_start("audio_synchronization_parallel", chunk_id)
             start_time = time.time()
             
-            # Load original audio
+            # Load original audio to get duration
             original_audio = AudioSegment.from_wav(str(original_audio_path))
-            translated_audio = original_audio
+            original_duration_ms = len(original_audio)
             
-            logger.info(f"Original audio duration: {len(original_audio)}ms")
+            # Start with SILENT audio (not original audio) to ensure no original audio remains
+            # Only TTS segments will be inserted, gaps will be silence
+            translated_audio = AudioSegment.silent(duration=original_duration_ms)
+            
+            logger.info(f"Original audio duration: {original_duration_ms}ms")
+            logger.info(f"Created silent audio base: {len(translated_audio)}ms (will insert TTS segments only)")
             logger.info(f"Processing {len(processed_segments)} segments for audio replacement")
+            
+            segments_inserted = 0
+            segments_skipped = 0
             
             for i, segment in enumerate(processed_segments):
                 # Send progress update for each segment
@@ -1215,6 +1438,7 @@ class CompliantVideoTranslationPipeline:
                 
                 if not segment.get('translated_text', '').strip():
                     logger.info(f"Skipping segment {i}: no translated text")
+                    segments_skipped += 1
                     continue
                 
                 start_ms = int(segment['start'] * 1000)
@@ -1230,48 +1454,278 @@ class CompliantVideoTranslationPipeline:
                 
                 # Use pre-generated TTS audio if available
                 if segment.get('tts_path') and Path(segment['tts_path']).exists():
-                    logger.info(f"Using TTS audio for segment {i}: {segment['tts_path']}")
+                    tts_file_path = Path(segment['tts_path'])
+                    logger.info(f"Using TTS audio for segment {i}: {tts_file_path}")
+                    logger.info(f"   TTS file exists: {tts_file_path.exists()}, size: {tts_file_path.stat().st_size if tts_file_path.exists() else 0} bytes")
                     try:
-                        tts_audio = AudioSegment.from_wav(segment['tts_path'])
+                        tts_audio = AudioSegment.from_wav(str(tts_file_path))
+                        tts_rms_before = tts_audio.rms if len(tts_audio) > 0 else 0
+                        logger.info(f"   ✅ Loaded TTS audio: duration={len(tts_audio)}ms, RMS={tts_rms_before:.1f}")
+                        if len(tts_audio) == 0:
+                            logger.warning(f"   ⚠️  TTS audio file is empty for segment {i}")
+                            segments_skipped += 1
+                            continue
+                        if tts_rms_before == 0:
+                            logger.warning(f"   ⚠️  TTS audio appears silent (RMS=0) for segment {i}")
                         
-                        # Apply timing adjustments - ensure exact duration match
+                        # Match TTS duration to original segment duration for lip-sync
+                        # Strategy: Always match duration for lip-sync, adjust speed when needed to match original pace
+                        original_duration = duration_ms
                         tts_duration = len(tts_audio)
-                        target_duration = duration_ms
                         
-                        if tts_duration > target_duration:
-                            # TTS is longer - trim to exact duration
-                            tts_audio = tts_audio[:target_duration]
-                        elif tts_duration < target_duration:
-                            # TTS is shorter - pad with silence to exact duration
-                            silence_needed = target_duration - tts_duration
-                            tts_audio += AudioSegment.silent(duration=silence_needed)
+                        logger.info(f"Segment {i} duration comparison: original={original_duration}ms, tts={tts_duration}ms, diff={abs(tts_duration - original_duration)}ms")
                         
-                        # Ensure exact duration match
-                        if len(tts_audio) != target_duration:
-                            if len(tts_audio) > target_duration:
-                                tts_audio = tts_audio[:target_duration]
+                        # Calculate speed ratio to match original duration for lip-sync
+                        # IMPORTANT: If TTS is shorter, don't slow it down - allow natural extension instead
+                        # Only speed up if TTS is longer (to match pace), never slow down (preserves sentence completion)
+                        if original_duration > 0 and tts_duration > 0:
+                            speed_ratio_raw = original_duration / tts_duration
+                            duration_diff_percent = abs(speed_ratio_raw - 1.0) * 100
+                            
+                            logger.info(f"Segment {i} speed calculation: raw_ratio={speed_ratio_raw:.3f} ({duration_diff_percent:.1f}% difference)")
+                            
+                            # Only apply speed adjustment if TTS is LONGER than original (speed up)
+                            # If TTS is shorter, allow natural extension - don't slow down (preserves sentence completion)
+                            if tts_duration > original_duration:
+                                # TTS is longer - can speed up to match (clamp to 0.9x-1.1x for quality)
+                                speed_ratio_before_clamp = speed_ratio_raw
+                                speed_ratio = max(0.9, min(1.1, speed_ratio_raw))
+                                
+                                if speed_ratio != speed_ratio_before_clamp:
+                                    logger.info(f"Segment {i} speed ratio clamped: {speed_ratio_before_clamp:.3f} -> {speed_ratio:.3f} (to preserve natural speech quality)")
+                                else:
+                                    logger.info(f"Segment {i} speed ratio: {speed_ratio:.3f} (within valid range, no clamping needed)")
                             else:
-                                tts_audio += AudioSegment.silent(duration=target_duration - len(tts_audio))
+                                # TTS is shorter - don't slow down, allow natural extension
+                                speed_ratio = 1.0
+                                logger.info(f"Segment {i} TTS is shorter ({tts_duration}ms < {original_duration}ms) - skipping speed adjustment, allowing natural extension")
+                            
+                            # Apply speed adjustment only if TTS is longer (speed up) and ratio differs from 1.0
+                            if speed_ratio != 1.0 and abs(speed_ratio - 1.0) > 0.001:  # Apply if any difference (avoid processing when exactly 1.0)
+                                logger.info(f"Segment {i} applying speed adjustment: {speed_ratio:.3f}x to match original pace")
+                                
+                                # Use FFmpeg for proper speed adjustment
+                                import tempfile
+                                import subprocess
+                                
+                                # Save current TTS to temp file
+                                temp_dir = output_audio_path.parent
+                                segment_id_for_temp = f"seg_{i}_{int(time.time())}"
+                                temp_input = temp_dir / f"tts_temp_{segment_id_for_temp}_input.wav"
+                                temp_output = temp_dir / f"tts_temp_{segment_id_for_temp}_output.wav"
+                                tts_audio.export(str(temp_input), format="wav")
+                                
+                                # FFmpeg atempo filter (range 0.5 to 2.0)
+                                # For ratios outside this range, chain multiple atempo filters
+                                atempo_ratio = speed_ratio
+                                atempo_cmd = ['ffmpeg', '-i', str(temp_input), '-filter:a', f'atempo={atempo_ratio}']
+                                
+                                # If ratio is outside valid range, chain filters
+                                if atempo_ratio < 0.5:
+                                    # Chain multiple atempo filters: 0.5 * 0.5 = 0.25, etc.
+                                    atempo_chain = []
+                                    remaining = atempo_ratio
+                                    while remaining < 0.5 and len(atempo_chain) < 4:
+                                        atempo_chain.append('0.5')
+                                        remaining *= 2
+                                    if remaining > 0.5:
+                                        atempo_chain.append(str(remaining))
+                                    atempo_cmd = ['ffmpeg', '-i', str(temp_input), '-filter:a', ','.join([f'atempo={r}' for r in atempo_chain])]
+                                elif atempo_ratio > 2.0:
+                                    # Chain multiple atempo filters: 2.0 * 2.0 = 4.0, etc.
+                                    atempo_chain = []
+                                    remaining = atempo_ratio
+                                    while remaining > 2.0 and len(atempo_chain) < 4:
+                                        atempo_chain.append('2.0')
+                                        remaining /= 2
+                                    if remaining > 1.0:
+                                        atempo_chain.append(str(remaining))
+                                    atempo_cmd = ['ffmpeg', '-i', str(temp_input), '-filter:a', ','.join([f'atempo={r}' for r in atempo_chain])]
+                                
+                                atempo_cmd.extend(['-y', str(temp_output)])
+                                result = subprocess.run(atempo_cmd, capture_output=True, text=True)
+                                
+                                if result.returncode == 0 and temp_output.exists():
+                                    tts_audio = AudioSegment.from_wav(str(temp_output))
+                                    final_tts_duration = len(tts_audio)
+                                    actual_speed_achieved = tts_duration / final_tts_duration if final_tts_duration > 0 else 1.0
+                                    duration_match_error = abs(final_tts_duration - original_duration)
+                                    logger.info(f"✅ Applied speed adjustment: {speed_ratio:.3f}x for segment {i}")
+                                    logger.info(f"   Duration: {tts_duration}ms -> {final_tts_duration}ms (target: {original_duration}ms, error: {duration_match_error:.1f}ms)")
+                                    logger.info(f"   Actual speed achieved: {actual_speed_achieved:.3f}x (requested: {speed_ratio:.3f}x)")
+                                    # Clean up temp files
+                                    temp_input.unlink(missing_ok=True)
+                                    temp_output.unlink(missing_ok=True)
+                                    # Track atempo value
+                                    self.atempo_values.append(speed_ratio)
+                                else:
+                                    logger.warning(f"⚠️  FFmpeg speed adjustment failed for segment {i}: {result.stderr}")
+                                    self.atempo_values.append(1.0)
+                            else:
+                                # Speed ratio is exactly 1.0, no adjustment needed
+                                self.atempo_values.append(1.0)
+                                logger.info(f"Segment {i}: TTS duration matches original exactly, no speed adjustment needed")
+                        else:
+                            # Invalid durations, skip speed adjustment
+                            self.atempo_values.append(1.0)
+                            logger.warning(f"⚠️  Segment {i}: Invalid durations (original={original_duration}ms, tts={tts_duration}ms), skipping speed adjustment")
                         
-                        # Mix TTS with background audio instead of replacing
-                        logger.info(f"Mixing audio segment {i}: {start_ms}ms-{end_ms}ms with TTS ({len(tts_audio)}ms)")
+                        # After speed adjustment, allow TTS audio to extend naturally for sentence completion
+                        # NEVER pad with silence - if TTS is shorter, it means the sentence needs more time
+                        # Allow TTS to extend up to 500ms into next segment with crossfading
+                        final_tts_duration = len(tts_audio)
+                        target_duration = duration_ms
+                        duration_diff = final_tts_duration - target_duration
                         
-                        # Extract the original segment to preserve background audio
-                        original_segment = translated_audio[start_ms:end_ms]
+                        # Check next segment to calculate safe extension zone
+                        next_segment_start_ms = None
+                        if i + 1 < len(processed_segments):
+                            next_segment = processed_segments[i + 1]
+                            if next_segment.get('start'):
+                                next_segment_start_ms = int(next_segment['start'] * 1000)
                         
-                        # Mix TTS with original background audio
-                        # Reduce background audio volume by 90% to make room for TTS
-                        background_audio = original_segment - 20  # -20dB reduction
+                        # Calculate safe extension: up to 800ms, but respect next segment start (leave 30ms minimum gap)
+                        max_safe_extension = 800  # Maximum extension allowed
+                        if next_segment_start_ms:
+                            available_space = next_segment_start_ms - end_ms - 30  # Leave 30ms minimum gap
+                            max_safe_extension = min(800, max(0, available_space))
                         
-                        # Boost TTS audio volume to make it more prominent
-                        boosted_tts = tts_audio + 6  # +6dB boost
+                        # NEVER pad with silence - if TTS is shorter, allow it to extend naturally
+                        # Only trim if extension would be excessive (>800ms or unsafe)
+                        if final_tts_duration > target_duration + max_safe_extension:
+                            # Only trim if extension would be excessive (>800ms or unsafe)
+                            trim_amount = final_tts_duration - target_duration
+                            # Trim to safe limit instead of target to preserve as much as possible
+                            safe_duration = target_duration + max_safe_extension
+                            tts_audio = tts_audio[:safe_duration]
+                            logger.info(f"✂️  Trimmed segment {i}: {final_tts_duration}ms -> {safe_duration}ms (removed {trim_amount - max_safe_extension}ms - extension would exceed safe limit of {max_safe_extension}ms)")
+                        else:
+                            # TTS duration is acceptable - allow natural extension
+                            # If shorter, it will extend naturally; if longer, allow up to safe limit
+                            if duration_diff < 0:
+                                # TTS is shorter - allow it to extend naturally (don't pad with silence)
+                                logger.info(f"✅ Segment {i} TTS is shorter ({final_tts_duration}ms < {target_duration}ms) - allowing natural extension, no padding")
+                            elif duration_diff > 0:
+                                if duration_diff <= max_safe_extension:
+                                    logger.info(f"✅ Segment {i} duration extended: {final_tts_duration}ms (target: {target_duration}ms, +{duration_diff}ms - within safe limit of {max_safe_extension}ms)")
+                                else:
+                                    # Extension exceeds safe limit, trim to safe limit
+                                    safe_duration = target_duration + max_safe_extension
+                                    tts_audio = tts_audio[:safe_duration]
+                                    logger.info(f"✅ Segment {i} duration extended to safe limit: {final_tts_duration}ms -> {safe_duration}ms (limited to {max_safe_extension}ms extension)")
+                            else:
+                                logger.info(f"✅ Segment {i} duration matches: {final_tts_duration}ms (target: {target_duration}ms, diff: {duration_diff:+d}ms)")
                         
-                        # Mix boosted TTS with background audio
-                        mixed_audio = background_audio.overlay(boosted_tts)
+                        # Replace original speech with translated TTS completely
+                        # This ensures only the translated voice is heard, not the original
+                        logger.info(f"Replacing audio segment {i}: {start_ms}ms-{end_ms}ms with TTS ({len(tts_audio)}ms)")
                         
-                        # Replace the segment with mixed audio
-                        translated_audio = translated_audio[:start_ms] + mixed_audio + translated_audio[end_ms:]
-                        logger.info(f"Audio mixing completed for segment {i}")
+                        # Normalize TTS audio volume to match original audio levels
+                        # Get RMS levels from original audio (not from silent base) to match volumes
+                        original_segment = original_audio[start_ms:end_ms]
+                        if len(original_segment) > 0 and original_segment.rms > 0:
+                            original_rms = original_segment.rms
+                            tts_rms = tts_audio.rms if tts_audio.rms > 0 else 1
+                            # Match TTS volume to original segment volume (dB adjustment)
+                            if tts_rms > 0:
+                                # Calculate dB difference: 20 * log10(rms_ratio)
+                                rms_ratio = original_rms / tts_rms
+                                # Convert to dB adjustment (limit to reasonable range)
+                                volume_adjustment_db = 20 * math.log10(rms_ratio) if rms_ratio > 0 else 0
+                                # Clamp adjustment to reasonable range (-10dB to +10dB)
+                                volume_adjustment_db = max(-10, min(10, volume_adjustment_db))
+                                if abs(volume_adjustment_db) > 1:
+                                    tts_audio = tts_audio + volume_adjustment_db
+                                    logger.info(f"   Adjusted TTS volume by {volume_adjustment_db:.1f}dB to match original")
+                        
+                        # Calculate if TTS extends beyond segment boundary (overlap scenario)
+                        tts_final_duration = len(tts_audio)
+                        actual_end_ms = start_ms + tts_final_duration
+                        overlap_ms = actual_end_ms - end_ms if actual_end_ms > end_ms else 0
+                        
+                        # Add smooth fades to prevent clicks/pops at segment boundaries
+                        # Use gentle fades: 20-50ms for natural transitions without affecting speech quality
+                        fade_duration = min(50, max(20, len(tts_audio) // 30))  # ~3% of segment duration, clamped to 20-50ms
+                        
+                        # Apply fade_in to start (always)
+                        if len(tts_audio) > 100:
+                            tts_audio = tts_audio.fade_in(fade_duration)
+                            
+                            # Apply fade_out only if TTS is longer than segment AND no overlap will occur
+                            # If TTS is shorter, don't fade out - preserve full sentence completion
+                            # If there's overlap, we'll handle fade_out in the crossfade logic
+                            if overlap_ms == 0 and tts_final_duration >= target_duration:
+                                # Only fade out if TTS is at least as long as the segment
+                                # This prevents cutting off shorter sentences
+                                tts_audio = tts_audio.fade_out(fade_duration)
+                                logger.debug(f"   Applied {fade_duration}ms fade in/out for smooth transition")
+                            elif overlap_ms == 0 and tts_final_duration < target_duration:
+                                # TTS is shorter - don't fade out to preserve sentence completion
+                                logger.debug(f"   Applied {fade_duration}ms fade in only (TTS shorter than segment, preserving full sentence without fade_out)")
+                            else:
+                                logger.debug(f"   Applied {fade_duration}ms fade in (overlap fade_out will be handled in crossfade)")
+                        
+                        # Replace the segment with smooth transitions and handle overlap with crossfading
+                        before_len = len(translated_audio)
+                        
+                        if overlap_ms > 0:
+                            # TTS extends beyond segment boundary - handle overlap with crossfade
+                            # Split TTS into: main part (up to end_ms) and overlap part (beyond end_ms)
+                            segment_duration = end_ms - start_ms
+                            main_tts = tts_audio[:segment_duration]
+                            overlap_tts = tts_audio[segment_duration:]
+                            
+                            # Get existing audio in overlap zone for crossfading
+                            overlap_start = end_ms
+                            overlap_end = actual_end_ms
+                            existing_overlap = translated_audio[overlap_start:overlap_end] if overlap_end <= len(translated_audio) else AudioSegment.silent(duration=overlap_ms)
+                            
+                            # Crossfade: blend overlap_tts with existing_overlap
+                            # overlap_tts fades out, existing_overlap fades in
+                            # IMPORTANT: Preserve full overlap_tts to prevent sentence cutoff
+                            if len(existing_overlap) > 0 and len(overlap_tts) > 0:
+                                # Calculate crossfade zone (where both overlap)
+                                min_overlap_len = min(len(overlap_tts), len(existing_overlap))
+                                crossfade_duration = min(200, max(100, min_overlap_len // 2))  # 100-200ms crossfade for professional smoothness
+                                
+                                # Preserve full overlap_tts - only fade out the overlapping portion
+                                # If overlap_tts is longer, keep the full length and fade out only the crossfade zone
+                                if len(overlap_tts) > len(existing_overlap):
+                                    # overlap_tts extends beyond existing_overlap - preserve full length
+                                    # Fade out only the crossfade zone at the end of existing_overlap
+                                    overlap_tts_faded = overlap_tts.fade_out(crossfade_duration)
+                                    existing_overlap_faded = existing_overlap[:min_overlap_len].fade_in(crossfade_duration)
+                                    # Blend the crossfade zone, then append remaining overlap_tts
+                                    crossfaded_zone = overlap_tts_faded[:min_overlap_len].overlay(existing_overlap_faded)
+                                    remaining_overlap = overlap_tts_faded[min_overlap_len:]
+                                    crossfaded_overlap = crossfaded_zone + remaining_overlap
+                                else:
+                                    # overlap_tts is same length or shorter - standard crossfade
+                                    overlap_tts_faded = overlap_tts.fade_out(crossfade_duration)
+                                    existing_overlap_faded = existing_overlap[:min_overlap_len].fade_in(crossfade_duration)
+                                    crossfaded_overlap = overlap_tts_faded.overlay(existing_overlap_faded)
+                                
+                                # Insert: main segment + crossfaded overlap (preserves full sentence)
+                                # Update overlap_end to account for preserved full overlap_tts length
+                                actual_overlap_end = overlap_start + len(crossfaded_overlap)
+                                translated_audio = translated_audio[:start_ms] + main_tts + crossfaded_overlap + translated_audio[actual_overlap_end:]
+                                logger.info(f"🔀 Crossfaded overlap: {overlap_ms}ms extension with {crossfade_duration}ms crossfade zone (preserved full {len(overlap_tts)}ms overlap_tts, inserted {len(crossfaded_overlap)}ms)")
+                            else:
+                                # No existing audio in overlap zone, just insert extended TTS with fade_out
+                                overlap_tts_faded = overlap_tts.fade_out(min(200, max(100, overlap_ms // 2)))
+                                translated_audio = translated_audio[:start_ms] + main_tts + overlap_tts_faded + translated_audio[overlap_end:]
+                                logger.info(f"✅ Extended segment {i} by {overlap_ms}ms (no existing audio to crossfade, applied fade_out)")
+                        else:
+                            # No overlap - simple replacement
+                            # Use actual_end_ms to preserve full TTS audio (even if shorter than segment)
+                            actual_end_ms = start_ms + tts_final_duration
+                            translated_audio = translated_audio[:start_ms] + tts_audio + translated_audio[actual_end_ms:]
+                            if tts_final_duration < target_duration:
+                                logger.debug(f"   TTS shorter than segment - preserved full TTS ({tts_final_duration}ms) instead of cutting at segment end ({target_duration}ms)")
+                        
+                        after_len = len(translated_audio)
+                        segments_inserted += 1
+                        logger.info(f"Audio replacement completed for segment {i}: {start_ms}ms-{end_ms}ms, TTS duration: {tts_final_duration}ms, overlap: {overlap_ms}ms, audio length before: {before_len}ms, after: {after_len}ms")
                         
                         # Log timing accuracy
                         actual_duration = len(tts_audio)
@@ -1288,16 +1742,52 @@ class CompliantVideoTranslationPipeline:
                         )
                         
                     except Exception as e:
+                        logger.error(f"❌ Error processing segment {i}: {str(e)}", exc_info=True)
                         structured_logger.log(
                             stage="segment_sync_parallel",
                             chunk_id=f"{chunk_id}_seg_{i}",
                             status="error",
                             error=str(e)
                         )
+                        segments_skipped += 1
                         continue
+                else:
+                    # Segment doesn't have TTS path or file doesn't exist
+                    logger.warning(f"⚠️  Segment {i} has no TTS path or TTS file doesn't exist: {segment.get('tts_path', 'missing')}")
+                    segments_skipped += 1
+                    continue
             
             # Export the final audio
+            final_audio_duration = len(translated_audio)
+            logger.info(f"Final audio duration: {final_audio_duration}ms, segments inserted: {segments_inserted}, segments skipped: {segments_skipped}")
+            
+            # Summary: Verify speed adjustments were applied and are variable
+            if self.atempo_values:
+                unique_speeds = set(self.atempo_values)
+                speed_range = (min(self.atempo_values), max(self.atempo_values))
+                speed_variance = max(self.atempo_values) - min(self.atempo_values)
+                logger.info(f"📊 Speed adjustment summary: {len(self.atempo_values)} segments processed")
+                logger.info(f"   Speed ratios: min={speed_range[0]:.3f}x, max={speed_range[1]:.3f}x, range={speed_variance:.3f}")
+                logger.info(f"   Unique speeds: {len(unique_speeds)} different values {sorted(unique_speeds)}")
+                if len(unique_speeds) == 1:
+                    logger.warning(f"⚠️  WARNING: All segments have the same speed ({self.atempo_values[0]:.3f}x) - speed variation not working!")
+                elif speed_variance < 0.01:
+                    logger.warning(f"⚠️  WARNING: Speed variation is very small ({speed_variance:.3f}) - speeds may appear identical")
+                else:
+                    logger.info(f"✅ Speed variation confirmed: {speed_variance:.3f} range across segments")
+            
+            # Check if audio has any non-silent content
+            if final_audio_duration > 0:
+                # Sample a few points to check for silence
+                sample_points = [final_audio_duration // 4, final_audio_duration // 2, 3 * final_audio_duration // 4]
+                sample_rms = [translated_audio[int(p)].rms for p in sample_points if int(p) < final_audio_duration]
+                max_rms = max(sample_rms) if sample_rms else 0
+                logger.info(f"Audio sample RMS levels: {sample_rms}, max: {max_rms}")
+                if max_rms == 0:
+                    logger.warning(f"⚠️  WARNING: Final audio appears to be completely silent (max RMS: {max_rms})")
+            
             translated_audio.export(str(output_audio_path), format="wav")
+            logger.info(f"Exported translated audio to: {output_audio_path}")
             
             duration_ms = (time.time() - start_time) * 1000
             structured_logger.log_stage_complete("audio_synchronization_parallel", chunk_id, duration_ms)
@@ -1315,9 +1805,16 @@ class CompliantVideoTranslationPipeline:
             structured_logger.log_stage_start("audio_synchronization", chunk_id)
             start_time = time.time()
             
-            # Load original audio
+            # Load original audio to get duration
             original_audio = AudioSegment.from_wav(str(original_audio_path))
-            translated_audio = original_audio
+            original_duration_ms = len(original_audio)
+            
+            # Start with SILENT audio (not original audio) to ensure no original audio remains
+            # Only TTS segments will be inserted, gaps will be silence
+            translated_audio = AudioSegment.silent(duration=original_duration_ms)
+            
+            logger.info(f"Original audio duration: {original_duration_ms}ms")
+            logger.info(f"Created silent audio base: {len(translated_audio)}ms (will insert TTS segments only)")
             
             for i, segment in enumerate(segments):
                 if not segment.get('translated_text', '').strip():
@@ -1418,35 +1915,178 @@ class CompliantVideoTranslationPipeline:
             structured_logger.log_stage_error("audio_synchronization", str(e), chunk_id)
             return False
     
-    async def combine_video_audio(self, video_path: Path, audio_path: Path, output_path: Path) -> bool:
-        """Combine video with new audio ensuring duration fidelity"""
+    async def combine_video_audio(self, video_path: Path, audio_path: Path, output_path: Path, subtitle_path: Path = None) -> bool:
+        """Combine video with new audio and embed translated subtitles ensuring duration fidelity"""
+        chunk_id = None  # Initialize to avoid UnboundLocalError in exception handler
+        temp_video_no_audio = None
         try:
-            chunk_id = f"video_combine_{int(time.time())}"
+            import time as time_module
+            chunk_id = f"video_combine_{int(time_module.time())}"
             structured_logger.log_stage_start("video_combination", chunk_id)
-            start_time = time.time()
+            start_time = time_module.time()
             
-            # Get original video duration for fidelity check
+            # Get original video duration for fidelity check and to preserve exact duration
             probe_cmd = [
                 'ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
                 '-of', 'csv=p=0', str(video_path)
             ]
             result = subprocess.run(probe_cmd, capture_output=True, text=True)
-            original_duration = float(result.stdout.strip()) if result.returncode == 0 else 0
+            original_duration = float(result.stdout.strip()) if result.returncode == 0 and result.stdout.strip() else 0
+            if original_duration <= 0:
+                logger.warning(f"⚠️ Could not determine original video duration, will use -shortest as fallback")
+            else:
+                logger.info(f"Original video duration: {original_duration:.3f}s - will preserve this duration in output")
             
-            # More robust FFmpeg command for video combination
-            cmd = [
-                'ffmpeg', 
-                '-i', str(video_path), 
-                '-i', str(audio_path),
-                '-c:v', 'copy',  # Copy video stream without re-encoding
-                '-c:a', 'aac',   # Re-encode audio to AAC
-                '-map', '0:v:0', # Map first video stream from first input
-                '-map', '1:a:0', # Map first audio stream from second input
-                '-shortest',      # End when shortest stream ends
-                '-avoid_negative_ts', 'make_zero',  # Handle timestamp issues
-                '-y',            # Overwrite output file
-                str(output_path)
+            # Extract video-only (no audio) from original video to ensure no original audio is included
+            # Use optimized FFmpeg flags for faster processing
+            temp_video_no_audio = video_path.parent / f"temp_video_no_audio_{chunk_id}.mp4"
+            extract_video_cmd = [
+                'ffmpeg',
+                '-i', str(video_path),
+                '-map', '0:v',      # Explicitly map ONLY video streams
+                '-c:v', 'copy',     # Copy video stream (fast, no re-encoding)
+                '-an',              # No audio (double protection)
+                '-threads', '0',    # Use all available CPU threads
+                '-y',               # Overwrite
+                str(temp_video_no_audio)
             ]
+            logger.info(f"Extracting video-only (no audio) from original video: {' '.join(extract_video_cmd)}")
+            extract_result = subprocess.run(extract_video_cmd, capture_output=True, text=True)
+            if extract_result.returncode != 0:
+                logger.error(f"Failed to extract video-only: {extract_result.stderr}")
+                return False
+            if not temp_video_no_audio.exists():
+                logger.error(f"Video-only file was not created: {temp_video_no_audio}")
+                return False
+            
+            # Verify extraction succeeded and has no audio streams
+            verify_cmd = [
+                'ffprobe', '-v', 'error', '-select_streams', 'a', 
+                '-show_entries', 'stream=codec_name', 
+                '-of', 'default=noprint_wrappers=1:nokey=1',
+                str(temp_video_no_audio)
+            ]
+            verify_result = subprocess.run(verify_cmd, capture_output=True, text=True)
+            if verify_result.stdout.strip():
+                logger.error(f"Temp video file still contains audio streams: {verify_result.stdout}")
+                logger.error(f"Verification command output: {verify_result.stdout}")
+                logger.error(f"Verification command stderr: {verify_result.stderr}")
+                return False
+            logger.info(f"Temp video file verification: NO_AUDIO_STREAMS (extraction successful)")
+            
+            # Extract original audio for background music/sounds mixing
+            # Best practice: Extract original audio to mix with translated speech
+            temp_original_audio = video_path.parent / f"temp_original_audio_{chunk_id}.wav"
+            extract_audio_cmd = [
+                'ffmpeg',
+                '-i', str(video_path),
+                '-map', '0:a',      # Map all audio streams
+                '-ac', '2',         # Convert to stereo (best practice for mixing)
+                '-ar', '44100',     # Standard sample rate (44.1kHz)
+                '-y',               # Overwrite
+                str(temp_original_audio)
+            ]
+            logger.info(f"Extracting original audio for background mixing: {' '.join(extract_audio_cmd)}")
+            extract_audio_result = subprocess.run(extract_audio_cmd, capture_output=True, text=True)
+            if extract_audio_result.returncode != 0:
+                logger.warning(f"⚠️ Could not extract original audio (may not have audio): {extract_audio_result.stderr}")
+                temp_original_audio = None  # No background audio available
+            elif not temp_original_audio.exists() or temp_original_audio.stat().st_size == 0:
+                logger.warning(f"⚠️ Original audio file was not created or is empty")
+                temp_original_audio = None
+            else:
+                logger.info(f"✅ Original audio extracted successfully ({temp_original_audio.stat().st_size} bytes)")
+            
+            # Mix original background audio with translated speech audio
+            # Best practice: Use amix filter with proper volume balancing
+            temp_mixed_audio = video_path.parent / f"temp_mixed_audio_{chunk_id}.wav"
+            if temp_original_audio and temp_original_audio.exists():
+                # Mix audio: background at 30% volume, translated speech at 100% volume
+                # Professional practice: Background music/sounds at 20-40% to not overpower speech
+                # Ensure both audio streams are converted to same format before mixing
+                mix_audio_cmd = [
+                    'ffmpeg',
+                    '-i', str(temp_original_audio),  # Original background audio
+                    '-i', str(audio_path),            # Translated speech audio
+                    '-filter_complex', 
+                    '[0:a]volume=0.3,aresample=44100[bg];[1:a]volume=1.0,aresample=44100[speech];[bg][speech]amix=inputs=2:duration=first:dropout_transition=2[aout]',
+                    '-map', '[aout]',
+                    '-ac', '2',         # Stereo output
+                    '-ar', '44100',     # Standard sample rate
+                    '-y',               # Overwrite
+                    str(temp_mixed_audio)
+                ]
+                logger.info(f"Mixing background audio with translated speech: {' '.join(mix_audio_cmd)}")
+                mix_result = subprocess.run(mix_audio_cmd, capture_output=True, text=True)
+                if mix_result.returncode != 0:
+                    logger.warning(f"⚠️ Audio mixing failed, using translated speech only: {mix_result.stderr}")
+                    final_audio_path = audio_path  # Fallback to translated speech only
+                elif not temp_mixed_audio.exists() or temp_mixed_audio.stat().st_size == 0:
+                    logger.warning(f"⚠️ Mixed audio file was not created, using translated speech only")
+                    final_audio_path = audio_path
+                else:
+                    logger.info(f"✅ Audio mixed successfully ({temp_mixed_audio.stat().st_size} bytes)")
+                    final_audio_path = temp_mixed_audio
+            else:
+                logger.info("No original audio available, using translated speech only")
+                final_audio_path = audio_path
+            
+            # Check if subtitle file exists and is valid
+            has_subtitles = subtitle_path and subtitle_path.exists() and subtitle_path.stat().st_size > 0
+            
+            # Build FFmpeg command based on whether subtitles should be embedded
+            # Use video-only file (no original audio) as input
+            if has_subtitles:
+                logger.info(f"Embedding translated subtitles from: {subtitle_path}")
+                # Escape subtitle path for FFmpeg filter (escape colons and backslashes)
+                subtitle_path_escaped = str(subtitle_path).replace('\\', '/').replace(':', '\\:')
+                # Use subtitles filter which supports SRT directly
+                subtitle_filter = f"subtitles='{subtitle_path_escaped}':force_style='FontSize=20,PrimaryColour=&Hffffff,OutlineColour=&H000000,Outline=2'"
+                cmd = [
+                    'ffmpeg', 
+                    '-i', str(temp_video_no_audio),  # Use video-only file (no original audio)
+                    '-i', str(final_audio_path),     # Mixed audio (background + translated speech) or translated speech only
+                    '-vf', subtitle_filter,
+                    '-c:v', 'libx264',  # Re-encode video to embed subtitles
+                    '-c:a', 'aac',      # Re-encode audio to AAC
+                    '-preset', 'slow',  # Better compression efficiency (produces smaller files at same quality)
+                    '-crf', '28',    # Good quality with smaller file size (28 is still good quality but much smaller than 23)
+                    '-b:a', '128k',  # Limit audio bitrate to reduce audio size
+                    '-movflags', '+faststart',  # Web optimization for faster playback
+                    '-threads', '0',  # Use all available CPU threads for parallel encoding
+                    '-async', '1',    # Audio sync: stretch/squeeze audio to match video (best practice)
+                    '-vsync', 'cfr',  # Constant frame rate for video sync
+                    '-map', '0:v',   # Map video from first input (video-only, no audio)
+                    '-map', '-0:a',  # Explicitly exclude ANY audio from input 0 (safety)
+                    '-map', '1:a',   # Map audio from second input (mixed audio or translated speech)
+                    *(['-t', str(original_duration)] if original_duration > 0 else ['-shortest']),  # Preserve exact original video duration if available, otherwise use -shortest
+                    '-avoid_negative_ts', 'make_zero',  # Handle timestamp issues
+                    '-y',            # Overwrite output file
+                    str(output_path)
+                ]
+            else:
+                logger.info("No subtitle file provided or subtitle file not found, creating video without embedded subtitles")
+                # Use video-only file and combine with mixed audio (background + translated speech)
+                # Best practice: Audio doesn't need to wait for video - use async processing
+                cmd = [
+                    'ffmpeg', 
+                    '-i', str(temp_video_no_audio),  # Use video-only file (no original audio)
+                    '-i', str(final_audio_path),     # Mixed audio (background + translated speech) or translated speech only
+                    '-c:v', 'copy',  # Copy video stream without re-encoding (fastest)
+                    '-c:a', 'aac',   # Re-encode audio to AAC
+                    '-b:a', '128k',  # Limit audio bitrate to reduce audio size
+                    '-movflags', '+faststart',  # Web optimization for faster playback
+                    '-threads', '0',  # Use all available CPU threads
+                    '-async', '1',    # Audio sync: stretch/squeeze audio to match video timing (professional best practice)
+                    '-vsync', 'cfr',  # Constant frame rate for video sync
+                    '-map', '0:v',   # Map video from first input (video-only, no audio)
+                    '-map', '-0:a',  # Explicitly exclude ANY audio from input 0 (safety)
+                    '-map', '1:a',   # Map audio from second input (mixed audio or translated speech)
+                    *(['-t', str(original_duration)] if original_duration > 0 else ['-shortest']),  # Preserve exact original video duration if available, otherwise use -shortest
+                    '-avoid_negative_ts', 'make_zero',  # Handle timestamp issues
+                    '-y',            # Overwrite output file
+                    str(output_path)
+                ]
             
             # Log the FFmpeg command for debugging
             logger.info(f"Running FFmpeg command: {' '.join(cmd)}")
@@ -1460,6 +2100,9 @@ class CompliantVideoTranslationPipeline:
                 return False
             if not audio_path.exists():
                 logger.error(f"Audio file does not exist: {audio_path}")
+                return False
+            if not final_audio_path.exists():
+                logger.error(f"Final audio file does not exist: {final_audio_path}")
                 return False
             
             # Check file sizes
@@ -1476,7 +2119,7 @@ class CompliantVideoTranslationPipeline:
                 return False
             
             result = subprocess.run(cmd, capture_output=True, text=True)
-            duration_ms = (time.time() - start_time) * 1000
+            duration_ms = (time_module.time() - start_time) * 1000
             
             logger.info(f"FFmpeg return code: {result.returncode}")
             if result.stdout:
@@ -1489,20 +2132,53 @@ class CompliantVideoTranslationPipeline:
                 logger.info("Trying fallback FFmpeg command...")
                 
                 # Fallback command with more permissive settings
-                fallback_cmd = [
-                    'ffmpeg',
-                    '-i', str(video_path),
-                    '-i', str(audio_path),
-                    '-c:v', 'libx264',  # Re-encode video if needed
-                    '-c:a', 'aac',
-                    '-preset', 'fast',  # Faster encoding
-                    '-crf', '23',       # Good quality
-                    '-map', '0:v:0',
-                    '-map', '1:a:0',
-                    '-shortest',
-                    '-y',
-                    str(output_path)
-                ]
+                # Use video-only file (no original audio) for fallback too
+                if has_subtitles:
+                    # Escape subtitle path for FFmpeg filter
+                    subtitle_path_escaped = str(subtitle_path).replace('\\', '/').replace(':', '\\:')
+                    subtitle_filter = f"subtitles='{subtitle_path_escaped}':force_style='FontSize=20,PrimaryColour=&Hffffff,OutlineColour=&H000000,Outline=2'"
+                    fallback_cmd = [
+                        'ffmpeg',
+                        '-i', str(temp_video_no_audio),  # Use video-only file (no original audio)
+                        '-i', str(final_audio_path),     # Mixed audio (background + translated speech) or translated speech only
+                        '-vf', subtitle_filter,
+                        '-c:v', 'libx264',  # Re-encode video if needed
+                        '-c:a', 'aac',
+                        '-preset', 'slow',  # Better compression efficiency (produces smaller files at same quality)
+                        '-crf', '28',       # Good quality with smaller file size (28 is still good quality but much smaller than 23)
+                        '-b:a', '128k',     # Limit audio bitrate to reduce audio size
+                        '-movflags', '+faststart',  # Web optimization for faster playback
+                        '-threads', '0',    # Use all available CPU threads
+                        '-async', '1',      # Audio sync: stretch/squeeze audio to match video
+                        '-vsync', 'cfr',    # Constant frame rate for video sync
+                        '-map', '0:v',      # Map video from first input (video-only)
+                        '-map', '-0:a',     # Explicitly exclude ANY audio from input 0 (safety)
+                        '-map', '1:a',      # Map audio from second input (mixed audio or translated speech)
+                        *(['-t', str(original_duration)] if original_duration > 0 else ['-shortest']),  # Preserve exact original video duration if available, otherwise use -shortest
+                        '-y',
+                        str(output_path)
+                    ]
+                else:
+                    fallback_cmd = [
+                        'ffmpeg',
+                        '-i', str(temp_video_no_audio),  # Use video-only file (no original audio)
+                        '-i', str(final_audio_path),     # Mixed audio (background + translated speech) or translated speech only
+                        '-c:v', 'libx264',  # Re-encode video if needed
+                        '-c:a', 'aac',
+                        '-preset', 'slow',  # Better compression efficiency (produces smaller files at same quality)
+                        '-crf', '28',       # Good quality with smaller file size (28 is still good quality but much smaller than 23)
+                        '-b:a', '128k',     # Limit audio bitrate to reduce audio size
+                        '-movflags', '+faststart',  # Web optimization for faster playback
+                        '-threads', '0',    # Use all available CPU threads
+                        '-async', '1',      # Audio sync: stretch/squeeze audio to match video
+                        '-vsync', 'cfr',    # Constant frame rate for video sync
+                        '-map', '0:v',      # Map video from first input (video-only)
+                        '-map', '-0:a',     # Explicitly exclude ANY audio from input 0 (safety)
+                        '-map', '1:a',      # Map audio from second input (mixed audio or translated speech)
+                        *(['-t', str(original_duration)] if original_duration > 0 else ['-shortest']),  # Preserve exact original video duration if available, otherwise use -shortest
+                        '-y',
+                        str(output_path)
+                    ]
                 
                 logger.info(f"Running fallback FFmpeg command: {' '.join(fallback_cmd)}")
                 fallback_result = subprocess.run(fallback_cmd, capture_output=True, text=True)
@@ -1518,8 +2194,19 @@ class CompliantVideoTranslationPipeline:
                     return False
                 else:
                     logger.info("Fallback FFmpeg command succeeded")
+                    # Use fallback_result for consistency
+                    result = fallback_result
             else:
                 logger.info("Primary FFmpeg command succeeded")
+            
+            # Wait a moment for file system to sync (especially on Docker volumes)
+            time_module.sleep(0.5)
+            
+            # Check if output file exists and has content
+            logger.info(f"Checking output file: {output_path}")
+            logger.info(f"Output path exists: {output_path.exists()}")
+            if output_path.exists():
+                logger.info(f"Output file size: {output_path.stat().st_size} bytes")
             
             # Check duration fidelity
             if output_path.exists():
@@ -1528,7 +2215,9 @@ class CompliantVideoTranslationPipeline:
                 final_duration = float(result.stdout.strip()) if result.returncode == 0 else 0
                 
                 duration_diff = abs(final_duration - original_duration)
-                duration_fidelity_ok = duration_diff <= (self.duration_fidelity_frames / 30.0)  # Assuming 30fps
+                # Use duration_fidelity_frames if available, otherwise default to 1 frame tolerance
+                fidelity_frames = getattr(self, 'duration_fidelity_frames', 1)
+                duration_fidelity_ok = duration_diff <= (fidelity_frames / 30.0)  # Assuming 30fps
                 
                 structured_logger.log(
                     stage="duration_check",
@@ -1540,18 +2229,113 @@ class CompliantVideoTranslationPipeline:
                     duration_fidelity_ok=duration_fidelity_ok
                 )
                 
-                logger.info(f"Duration check: original={original_duration}s, final={final_duration}s, diff={duration_diff}s")
+                logger.info(f"Duration check: original={original_duration}s, final={final_duration}s, diff={duration_diff}s, fidelity_ok={duration_fidelity_ok}")
+                
+                # If output file exists and has content, consider it successful even if duration fidelity is slightly off
+                # (duration differences can occur due to codec/container differences, but video is still valid)
+                file_size = output_path.stat().st_size
+                if file_size > 0:
+                    logger.info(f"✅ Video combination successful: Output file exists at {output_path} ({file_size} bytes)")
+                    logger.info(f"   Duration: original={original_duration:.2f}s, final={final_duration:.2f}s, diff={duration_diff:.2f}s")
+                    
+                    # Verify final video has correct audio (translated only)
+                    verify_final_cmd = [
+                        'ffprobe', '-v', 'error', '-select_streams', 'a', 
+                        '-show_entries', 'stream=codec_name', 
+                        '-of', 'default=noprint_wrappers=1:nokey=1',
+                        str(output_path)
+                    ]
+                    verify_final_result = subprocess.run(verify_final_cmd, capture_output=True, text=True)
+                    audio_codecs = [s.strip() for s in verify_final_result.stdout.strip().split('\n') if s.strip()]
+                    audio_stream_count = len(audio_codecs)
+                    
+                    logger.info(f"Final video audio verification: Found {audio_stream_count} audio stream(s)")
+                    if audio_stream_count > 1:
+                        logger.warning(f"Final video has multiple audio streams: {audio_codecs} (expected single aac stream)")
+                    elif audio_stream_count == 0:
+                        logger.warning(f"Final video has no audio streams (expected single aac stream)")
+                    elif audio_stream_count == 1 and 'aac' not in audio_codecs[0].lower():
+                        logger.warning(f"Final video audio verification: codec={audio_codecs[0]} (expected aac codec)")
+                    else:
+                        logger.info(f"Final video audio verification: Single aac stream confirmed (translated audio only)")
+                    
+                    structured_logger.log_stage_complete("video_combination", chunk_id, duration_ms)
+                    # Clean up temp files
+                    if temp_video_no_audio and temp_video_no_audio.exists():
+                        try:
+                            temp_video_no_audio.unlink()
+                            logger.info(f"Cleaned up temp video-only file: {temp_video_no_audio}")
+                        except Exception as e:
+                            logger.warning(f"Failed to clean up temp file {temp_video_no_audio}: {e}")
+                    # Clean up temp audio files
+                    if 'temp_original_audio' in locals() and temp_original_audio and temp_original_audio.exists():
+                        try:
+                            temp_original_audio.unlink()
+                            logger.info(f"Cleaned up temp original audio file: {temp_original_audio}")
+                        except Exception as e:
+                            logger.warning(f"Failed to clean up temp file {temp_original_audio}: {e}")
+                    if 'temp_mixed_audio' in locals() and temp_mixed_audio and temp_mixed_audio.exists() and temp_mixed_audio != final_audio_path:
+                        try:
+                            temp_mixed_audio.unlink()
+                            logger.info(f"Cleaned up temp mixed audio file: {temp_mixed_audio}")
+                        except Exception as e:
+                            logger.warning(f"Failed to clean up temp file {temp_mixed_audio}: {e}")
+                    return True
+                else:
+                    logger.error(f"❌ Output file exists but is empty: {output_path}")
+                    structured_logger.log_stage_error("video_combination", f"Output file is empty: {output_path}", chunk_id)
+                    # Try to get more info about why it's empty
+                    if video_path.exists() and audio_path.exists():
+                        logger.error(f"   Input files exist: video={video_path.stat().st_size} bytes, audio={audio_path.stat().st_size} bytes")
+                    return False
             else:
-                logger.error(f"Output file was not created: {output_path}")
-                structured_logger.log_stage_error("video_combination", f"Output file not created: {output_path}", chunk_id)
+                logger.error(f"❌ Output file was not created: {output_path}")
+                logger.error(f"   Video path: {video_path} (exists: {video_path.exists()})")
+                logger.error(f"   Audio path: {audio_path} (exists: {audio_path.exists()})")
+                # Check if FFmpeg actually ran - check stderr for clues
+                if result.returncode != 0:
+                    logger.error(f"   FFmpeg error: {result.stderr}")
+                if chunk_id:
+                    structured_logger.log_stage_error("video_combination", f"Output file not created: {output_path}", chunk_id)
                 return False
             
-            structured_logger.log_stage_complete("video_combination", chunk_id, duration_ms)
-            return True
-            
         except Exception as e:
-            structured_logger.log_stage_error("video_combination", str(e), chunk_id)
+            error_msg = str(e)
+            logger.error(f"❌ Exception in combine_video_audio: {error_msg}", exc_info=True)
+            if chunk_id:
+                structured_logger.log_stage_error("video_combination", error_msg, chunk_id)
+            else:
+                # Fallback chunk_id if it wasn't set
+                import time as time_module
+                fallback_chunk_id = f"video_combine_error_{int(time_module.time())}"
+                structured_logger.log_stage_error("video_combination", error_msg, fallback_chunk_id)
+            # Clean up temp files on error
+            if temp_video_no_audio and temp_video_no_audio.exists():
+                try:
+                    temp_video_no_audio.unlink()
+                    logger.info(f"Cleaned up temp video-only file after error: {temp_video_no_audio}")
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to clean up temp file {temp_video_no_audio}: {cleanup_error}")
+            if 'temp_original_audio' in locals() and temp_original_audio and temp_original_audio.exists():
+                try:
+                    temp_original_audio.unlink()
+                    logger.info(f"Cleaned up temp original audio file after error: {temp_original_audio}")
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to clean up temp file {temp_original_audio}: {cleanup_error}")
+            if 'temp_mixed_audio' in locals() and temp_mixed_audio and temp_mixed_audio.exists():
+                try:
+                    temp_mixed_audio.unlink()
+                    logger.info(f"Cleaned up temp mixed audio file after error: {temp_mixed_audio}")
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to clean up temp file {temp_mixed_audio}: {cleanup_error}")
             return False
+        finally:
+            # Ensure temp file is cleaned up even if something else fails
+            if temp_video_no_audio and temp_video_no_audio.exists():
+                try:
+                    temp_video_no_audio.unlink()
+                except Exception:
+                    pass  # Ignore cleanup errors in finally
     
     def _parse_video_duration(self, video_path: Path) -> float:
         """Parse video duration using ffprobe"""
@@ -1631,6 +2415,14 @@ class CompliantVideoTranslationPipeline:
                           output_path: Path, progress_callback=None, session_id: str = None,
                           resume: bool = False) -> Dict[str, Any]:
         """Process video with full pipeline and quality metrics"""
+        # CRITICAL: Log at the very start - BEFORE any try/except
+        # FORCE OUTPUT - print always works
+        print(f"🚀🚀🚀 process_video ENTRY POINT - session_id={session_id}", flush=True)
+        print(f"   video_path={video_path}, source_lang={source_lang}, target_lang={target_lang}", flush=True)
+        print(f"📁 File exists: {video_path.exists() if video_path else 'N/A'}, output_path={output_path}", flush=True)
+        logger.info(f"🚀 process_video ENTRY POINT - session_id={session_id}, video_path={video_path}, source_lang={source_lang}, target_lang={target_lang}")
+        logger.info(f"📁 File exists: {video_path.exists() if video_path else 'N/A'}, output_path={output_path}")
+        
         try:
             # Generate session ID if not provided
             if not session_id:
@@ -1695,19 +2487,28 @@ class CompliantVideoTranslationPipeline:
                 if not self.check_memory_availability(required_gb=0.5):
                     return {
                         'success': False,
-                        'error': 'Insufficient memory available for processing. Please close other applications and try again.'
+                        'error': 'Insufficient memory available for processing. Please close other applications and try again.',
+                        'segments_processed': 0
                     }
             
             try:
-                # Step 0: Initialize models
+                # Track initialization start time
+                init_start_time = time.time()
+                
+                # Step 0: Initialize models - estimate time based on model size and device
+                estimated_init_time = self._estimate_initialization_time()
                 if progress_callback:
                     memory_info = self.get_memory_usage()
                     await progress_callback(5, "Initializing AI models...", 
                                           stage_progress=5, 
                                           current_chunk=0,
                                           total_chunks=0,  # Will be updated after transcription
-                                          memory_usage=memory_info)
+                                          memory_usage=memory_info,
+                                          initialization_eta_seconds=estimated_init_time)
+                
                 await self.initialize_models()
+                actual_init_time = time.time() - init_start_time
+                logger.info(f"Initialization completed in {actual_init_time:.1f}s (estimated: {estimated_init_time}s)")
                 self.log_memory_usage('after_model_init', session_id)
                 
                 # Step 1: Extract audio
@@ -1720,7 +2521,7 @@ class CompliantVideoTranslationPipeline:
                                           memory_usage=memory_info)
                 audio_path = temp_dir / "extracted_audio.wav"
                 if not await self.extract_audio(video_path, audio_path):
-                    return {'success': False, 'error': 'Audio extraction failed'}
+                    return {'success': False, 'error': 'Audio extraction failed', 'segments_processed': 0}
                 
                 # Progress update after audio extraction
                 if progress_callback:
@@ -1740,7 +2541,31 @@ class CompliantVideoTranslationPipeline:
                     self.cleanup_manager.cleanup_completed_chunks(session_id)
                 
                 # Transcribe audio first
-                segments = await self.transcribe_audio(audio_path, source_lang)
+                logger.info(f"🔍 Starting transcription for {session_id}...")
+                try:
+                    segments = await self.transcribe_audio(audio_path, source_lang)
+                except Exception as e:
+                    error_msg = f'Transcription exception: {str(e)}'
+                    logger.error(f"❌ {error_msg}", exc_info=True)
+                    return {
+                        'success': False, 
+                        'error': error_msg,
+                        'segments_processed': 0
+                    }
+                
+                # CRITICAL: Validate transcription result immediately
+                logger.info(f"📝 Transcription completed: {len(segments) if segments else 0} segments detected (type: {type(segments)})")
+                
+                if not segments or len(segments) == 0:
+                    error_msg = 'Transcription failed: No speech segments detected in video'
+                    logger.error(f"❌ {error_msg} - returning failure immediately")
+                    return {
+                        'success': False, 
+                        'error': error_msg,
+                        'segments_processed': 0  # Explicitly set to 0
+                    }
+                
+                logger.info(f"✅ Transcription validation passed: {len(segments)} segments will be processed")
                 
                 if progress_callback:
                     memory_info = self.get_memory_usage()
@@ -1749,8 +2574,6 @@ class CompliantVideoTranslationPipeline:
                                           current_chunk=0,
                                           total_chunks=len(segments),
                                           memory_usage=memory_info)
-                if not segments:
-                    return {'success': False, 'error': 'Transcription failed'}
                 
                 # Progress update after transcription
                 if progress_callback:
@@ -1775,9 +2598,22 @@ class CompliantVideoTranslationPipeline:
                 # AI Orchestrator disabled - using direct translation
                 
                 # Process segments in parallel with early preview generation
+                logger.info(f"🔄 Starting translation and TTS for {len(segments)} segments")
                 processed_segments = await self.process_segments_parallel_with_early_preview(
                     segments, target_lang, temp_dir, session_id, video_path, progress_callback
                 )
+                
+                # Validate that segments were actually processed
+                if not processed_segments or len(processed_segments) == 0:
+                    error_msg = f'Translation failed: No segments were processed. Expected {len(segments)} segments but got 0. Check transcription and TTS generation.'
+                    logger.error(f"❌ {error_msg}")
+                    return {
+                        'success': False, 
+                        'error': error_msg,
+                        'segments_processed': 0  # Explicitly set to 0
+                    }
+                
+                logger.info(f"✅ Translation and TTS completed: {len(processed_segments)}/{len(segments)} segments processed")
                 
                 # Update progress after parallel processing
                 if progress_callback:
@@ -1798,11 +2634,28 @@ class CompliantVideoTranslationPipeline:
                                           current_chunk=len(processed_segments),
                                           total_chunks=len(segments),
                                           memory_usage=memory_info)
+                # Validate processed_segments have TTS before creating audio
+                segments_with_tts = [seg for seg in processed_segments if seg.get('tts_path') and Path(seg['tts_path']).exists()]
+                if not segments_with_tts or len(segments_with_tts) == 0:
+                    error_msg = f"Audio synchronization failed: No segments have valid TTS files. Expected {len(processed_segments)} segments with TTS, got 0."
+                    logger.error(f"❌ {error_msg}")
+                    return {
+                        'success': False, 
+                        'error': error_msg,
+                        'segments_processed': len(processed_segments) if processed_segments else 0
+                    }
+                
+                logger.info(f"📊 Audio synchronization: {len(segments_with_tts)}/{len(processed_segments)} segments have valid TTS files")
+                
                 translated_audio_path = temp_dir / "translated_audio.wav"
                 if not await self.create_translated_audio_from_parallel(
                     processed_segments, audio_path, translated_audio_path, target_lang, progress_callback
                 ):
-                    return {'success': False, 'error': 'Audio synchronization failed'}
+                    return {
+                        'success': False, 
+                        'error': 'Audio synchronization failed',
+                        'segments_processed': len(processed_segments) if processed_segments else 0
+                    }
                 
                 # Progress update after audio synchronization
                 if progress_callback:
@@ -1817,16 +2670,82 @@ class CompliantVideoTranslationPipeline:
                 self.cleanup_manager.cleanup_completed_chunks(session_id)
                 self.log_memory_usage('after_tts', session_id)
                 
-                # Step 5: Combine video and audio
+                # Step 5: Export SRT files (before video combination so they're always created)
                 if progress_callback:
                     memory_info = self.get_memory_usage()
-                    await progress_callback(85, "Combining video and audio...", 
+                    await progress_callback(75, "Exporting transcripts...", 
+                                          stage_progress=75, 
+                                          current_chunk=len(processed_segments),
+                                          total_chunks=len(segments),
+                                          memory_usage=memory_info)
+                
+                # Create artifacts directory using dynamic path resolver
+                session_artifacts = get_session_artifacts(session_id)
+                artifacts_dir = session_artifacts['translated_video'].parent
+                
+                # Ensure artifacts directory exists and is writable
+                try:
+                    artifacts_dir.mkdir(parents=True, exist_ok=True)
+                    logger.info(f"Artifacts directory ready: {artifacts_dir} (exists: {artifacts_dir.exists()}, writable: {os.access(artifacts_dir, os.W_OK)})")
+                except Exception as e:
+                    logger.error(f"Failed to create artifacts directory {artifacts_dir}: {e}")
+                    raise
+                
+                # Validate segment data before export
+                logger.info(f"Preparing to export SRT files for session {session_id}:")
+                logger.info(f"  - Original segments count: {len(segments) if segments else 0}")
+                logger.info(f"  - Processed segments count: {len(processed_segments) if processed_segments else 0}")
+                
+                if not segments or len(segments) == 0:
+                    logger.warning(f"No segments available for original SRT export for session {session_id}")
+                if not processed_segments or len(processed_segments) == 0:
+                    logger.warning(f"No processed segments available for translated SRT export for session {session_id}")
+                
+                # Export original SRT (session-scoped filenames)
+                original_srt_path = artifacts_dir / f"{session_id}_subtitles.srt"
+                logger.info(f"Exporting original SRT to: {original_srt_path}")
+                original_success = self.export_srt(segments, original_srt_path, is_translated=False)
+                if not original_success:
+                    logger.error(f"Failed to export original SRT for session {session_id} to {original_srt_path}")
+                elif not original_srt_path.exists():
+                    logger.error(f"Original SRT file not created at {original_srt_path} (exists: {original_srt_path.exists()})")
+                else:
+                    file_size = original_srt_path.stat().st_size
+                    logger.info(f"Original SRT exported successfully: {original_srt_path} ({len(segments)} segments, {file_size} bytes)")
+                
+                # Export translated SRT (session-scoped filenames)
+                translated_srt_path = artifacts_dir / f"{session_id}_translated_subtitles.srt"
+                logger.info(f"Exporting translated SRT to: {translated_srt_path}")
+                translated_success = self.export_srt(processed_segments, translated_srt_path, is_translated=True)
+                if not translated_success:
+                    logger.error(f"Failed to export translated SRT for session {session_id} to {translated_srt_path}")
+                elif not translated_srt_path.exists():
+                    logger.error(f"Translated SRT file not created at {translated_srt_path} (exists: {translated_srt_path.exists()})")
+                else:
+                    file_size = translated_srt_path.stat().st_size
+                    logger.info(f"Translated SRT exported successfully: {translated_srt_path} ({len(processed_segments)} segments, {file_size} bytes)")
+                
+                # Step 6: Combine video and audio with translated subtitles
+                if progress_callback:
+                    memory_info = self.get_memory_usage()
+                    await progress_callback(85, "Combining video, translated audio and subtitles...", 
                                           stage_progress=85, 
                                           current_chunk=len(processed_segments),
                                           total_chunks=len(segments),
                                           memory_usage=memory_info)
-                if not await self.combine_video_audio(video_path, translated_audio_path, output_path):
-                    return {'success': False, 'error': 'Video combination failed'}
+                # Pass translated subtitle path to embed subtitles in final video
+                subtitle_path_for_embedding = translated_srt_path if 'translated_srt_path' in locals() and translated_srt_path.exists() else None
+                if not await self.combine_video_audio(video_path, translated_audio_path, output_path, subtitle_path=subtitle_path_for_embedding):
+                    # Return error but include SRT files since they were already exported
+                    return {
+                        'success': False,
+                        'error': 'Video combination failed',
+                        'segments_processed': len(processed_segments) if processed_segments else 0,
+                        'srt_files': {
+                            'original': str(original_srt_path) if 'original_srt_path' in locals() else None,
+                            'translated': str(translated_srt_path) if 'translated_srt_path' in locals() else None
+                        }
+                    }
                 
                 # Progress update after video combination
                 if progress_callback:
@@ -1866,27 +2785,6 @@ class CompliantVideoTranslationPipeline:
                             {'preview_available': True, 'preview_path': str(preview_path)}
                         )
                 
-                # Step 6: Export SRT files
-                if progress_callback:
-                    memory_info = self.get_memory_usage()
-                    await progress_callback(95, "Exporting transcripts...", 
-                                          stage_progress=95, 
-                                          current_chunk=len(processed_segments),
-                                          total_chunks=len(segments),
-                                          memory_usage=memory_info)
-                
-                # Create artifacts directory using dynamic path resolver
-                session_artifacts = get_session_artifacts(session_id)
-                artifacts_dir = session_artifacts['translated_video'].parent
-                
-                # Export original SRT (session-scoped filenames)
-                original_srt_path = artifacts_dir / f"{session_id}_subtitles.srt"
-                self.export_srt(segments, original_srt_path, is_translated=False)
-                
-                # Export translated SRT (session-scoped filenames)
-                translated_srt_path = artifacts_dir / f"{session_id}_translated_subtitles.srt"
-                self.export_srt(processed_segments, translated_srt_path, is_translated=True)
-                
                 # Calculate final metrics
                 overall_duration = (time.time() - overall_start) * 1000
                 structured_logger.log_stage_complete("video_processing", session_id, overall_duration)
@@ -1905,23 +2803,81 @@ class CompliantVideoTranslationPipeline:
                 # Calculate quality metrics
                 quality_metrics = self.calculate_final_quality_metrics(original_duration, final_duration)
                 
-                # Get file sizes
-                import os
+                # Get file sizes (os is already imported at top)
                 original_size = os.path.getsize(str(video_path)) if os.path.exists(str(video_path)) else 0
                 output_size = os.path.getsize(str(output_path)) if os.path.exists(str(output_path)) else 0
                 
+                # Final validation - ensure we actually processed segments
+                if not processed_segments or len(processed_segments) == 0:
+                    error_msg = "Translation marked as complete but no segments were processed. This indicates a pipeline failure."
+                    logger.error(f"❌ {error_msg}")
+                    return {
+                        'success': False,
+                        'error': error_msg,
+                        'output_path': None,
+                        'segments_processed': 0
+                    }
+                
+                # Validate that segments were actually translated (must have BOTH translated_text AND tts_path)
+                # Count segments with valid translations (have non-empty translated_text AND tts_path)
+                translated_count = sum(1 for seg in processed_segments 
+                                     if seg.get('translated_text', '').strip() and seg.get('tts_path') and Path(seg.get('tts_path')).exists())
+                
+                # Count segments with empty original text that were skipped
+                empty_text_count = sum(1 for seg in processed_segments 
+                                     if not seg.get('text', '').strip())
+                
+                # Count segments where translation failed
+                translation_failed_count = sum(1 for seg in processed_segments 
+                                             if seg.get('translation_failed') or (not seg.get('translated_text', '').strip() and seg.get('text', '').strip()))
+                
+                logger.info(f"📊 Translation validation: {translated_count}/{len(processed_segments)} segments fully translated (text+TTS), {empty_text_count} had empty original text, {translation_failed_count} translation failures")
+                
+                if translated_count == 0:
+                    error_msg = f"Translation failed: No segments were successfully translated. Processed {len(processed_segments)} segments, {empty_text_count} had empty original text, {translation_failed_count} translation failures. This indicates translation or TTS generation is not working. Check translation model loading and TTS service."
+                    logger.error(f"❌ {error_msg}")
+                    # Log details about failed segments
+                    failed_segments = [seg for seg in processed_segments if not (seg.get('translated_text', '').strip() and seg.get('tts_path') and Path(seg.get('tts_path')).exists())]
+                    for i, seg in enumerate(failed_segments[:5]):  # Log first 5 failures
+                        logger.error(f"   Failed segment {i}: start={seg.get('start')}, has_text={bool(seg.get('text', '').strip())}, has_translated={bool(seg.get('translated_text', '').strip())}, has_tts={bool(seg.get('tts_path') and Path(seg.get('tts_path')).exists()) if seg.get('tts_path') else False}")
+                    return {
+                        'success': False,
+                        'error': error_msg,
+                        'output_path': None,
+                        'segments_processed': len(processed_segments)
+                    }
+                
                 if progress_callback:
                     memory_info = self.get_memory_usage()
+                    # Ensure we have valid segment counts for final completion
+                    final_current_chunk = len(processed_segments)
+                    final_total_chunks = len(segments) if segments and len(segments) > 0 else len(processed_segments)
                     await progress_callback(100, "Translation completed", 
-                                          stage_progress=100, 
-                                          current_chunk=len(processed_segments),
-                                          total_chunks=len(segments),
+                                          stage_progress=100,
+                                          current_chunk=final_current_chunk,
+                                          total_chunks=final_total_chunks,
                                           memory_usage=memory_info)
+                
+                logger.info(f"✅ Translation completed successfully: {len(processed_segments)} segments processed, {translated_count} with translation/TTS")
+                
+                # Final validation: ensure segments_processed is always present and valid
+                final_segments_processed = len(processed_segments)
+                if final_segments_processed == 0:
+                    error_msg = "CRITICAL: Pipeline completed but processed 0 segments. This should have been caught earlier."
+                    logger.error(f"❌ {error_msg}")
+                    return {
+                        'success': False,
+                        'error': error_msg,
+                        'output_path': None,
+                        'segments_processed': 0
+                    }
+                
+                logger.info(f"✅ Pipeline completion validation: {final_segments_processed} segments processed successfully")
                 
                 return {
                     'success': True,
                     'output_path': str(output_path),
-                    'segments_processed': len(segments),
+                    'segments_processed': final_segments_processed,
                     'original_duration': original_duration,
                     'final_duration': final_duration,
                     'duration_match': quality_metrics['duration_match'],
@@ -1943,8 +2899,20 @@ class CompliantVideoTranslationPipeline:
                     shutil.rmtree(temp_dir)
                 
         except Exception as e:
+            print(f"❌❌❌ CRITICAL EXCEPTION in process_video for session {session_id}: {e}", flush=True)
+            print(f"   Exception type: {type(e).__name__}", flush=True)
+            print(f"   Exception args: {e.args}", flush=True)
+            print(f"   video_path was: {video_path}", flush=True)
+            print(f"   source_lang was: {source_lang}, target_lang was: {target_lang}", flush=True)
+            import traceback
+            print(traceback.format_exc(), flush=True)
+            logger.error(f"❌ CRITICAL EXCEPTION in process_video for session {session_id}: {e}", exc_info=True)
+            logger.error(f"   Exception type: {type(e).__name__}")
+            logger.error(f"   Exception args: {e.args}")
+            logger.error(f"   video_path was: {video_path}")
+            logger.error(f"   source_lang was: {source_lang}, target_lang was: {target_lang}")
             structured_logger.log_stage_error("video_processing", str(e), session_id)
-            return {'success': False, 'error': str(e)}
+            return {'success': False, 'error': str(e), 'segments_processed': 0}
 
     def generate_preview(self, video_path: Path, start_time: float, duration: float, output_path: Path) -> Dict:
         """Generate preview video during processing"""
@@ -2460,48 +3428,253 @@ class CompliantVideoTranslationPipeline:
     
     def export_srt(self, segments: List[Dict], output_path: Path, is_translated: bool = False) -> bool:
         """Export segments as SRT subtitle file"""
+        chunk_id = None
         try:
             chunk_id = f"srt_export_{int(time.time())}"
             structured_logger.log_stage_start("srt_export", chunk_id)
             
+            # Validate input
+            if not segments or len(segments) == 0:
+                logger.warning(f"Cannot export SRT: No segments provided (is_translated={is_translated})")
+                return False
+            
+            # Ensure parent directory exists
+            try:
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                logger.debug(f"Ensured parent directory exists: {output_path.parent}")
+            except Exception as dir_error:
+                logger.error(f"Failed to create parent directory {output_path.parent}: {dir_error}")
+                raise
+            
+            # Validate output path is writable
+            if not os.access(output_path.parent, os.W_OK):
+                error_msg = f"Parent directory is not writable: {output_path.parent}"
+                logger.error(error_msg)
+                raise PermissionError(error_msg)
+            
+            logger.info(f"Exporting SRT file to {output_path} ({len(segments)} segments, is_translated={is_translated})")
+            
             srt_content = []
+            valid_segments = 0
             
             for i, segment in enumerate(segments, 1):
-                # Get timing information
-                start_time = segment.get('start', 0)
-                end_time = segment.get('end', start_time + 1)
-                
-                # Convert to SRT time format (HH:MM:SS,mmm)
-                start_srt = self._seconds_to_srt_time(start_time)
-                end_srt = self._seconds_to_srt_time(end_time)
-                
-                # Get text content
-                if is_translated:
-                    text = segment.get('translated_text', segment.get('text', ''))
-                else:
-                    text = segment.get('text', '')
-                
-                # Clean up text
-                text = text.strip()
-                if not text:
+                try:
+                    # Skip segments that were merged into previous ones
+                    if segment.get('_merged', False):
+                        logger.debug(f"Skipping segment {i}: already merged into previous segment")
+                        continue
+                    
+                    # Get timing information
+                    start_time = segment.get('start', 0)
+                    end_time = segment.get('end', start_time + 1)
+                    
+                    # Validate timing
+                    if not isinstance(start_time, (int, float)) or not isinstance(end_time, (int, float)):
+                        logger.warning(f"Invalid timing in segment {i}: start={start_time}, end={end_time}")
+                        continue
+                    
+                    if end_time <= start_time:
+                        logger.warning(f"Invalid timing in segment {i}: end ({end_time}) <= start ({start_time})")
+                        end_time = start_time + 1  # Default to 1 second duration
+                    
+                    # Get text content
+                    if is_translated:
+                        text = segment.get('translated_text', segment.get('text', ''))
+                    else:
+                        text = segment.get('text', '')
+                    
+                    # Clean up text - remove extra whitespace, fix spacing issues
+                    text = text.strip()
+                    # Remove multiple spaces and fix spacing around punctuation
+                    text = re.sub(r'\s+', ' ', text)  # Replace multiple spaces with single space
+                    text = re.sub(r'\s+([.,!?;:])', r'\1', text)  # Remove space before punctuation
+                    text = re.sub(r'([.,!?;:])\s*([.,!?;:])', r'\1\2', text)  # Fix double punctuation spacing
+                    # Remove single-digit standalone numbers that appear to be artifacts
+                    # Only remove if it's a single digit surrounded by spaces (likely segment number artifacts)
+                    text = re.sub(r'\s+\b[0-9]\b\s+', ' ', text)  # Remove single-digit standalone numbers
+                    text = text.strip()
+                    if not text:
+                        logger.debug(f"Skipping segment {i}: empty text after cleaning")
+                        continue
+                    
+                    # Check if text appears incomplete (doesn't end with sentence-ending punctuation)
+                    # Sentence-ending punctuation: . ! ? and their variations
+                    sentence_endings = ['.', '!', '?', '。', '！', '？']
+                    text_ends_properly = any(text.rstrip().endswith(ending) for ending in sentence_endings)
+                    
+                    # Detect incomplete sentences more aggressively
+                    # Incomplete if: doesn't end with punctuation AND doesn't end with common sentence-ending words
+                    # Common incomplete patterns: ends with articles, prepositions, conjunctions, or short words
+                    incomplete_indicators = ['не', 'и', 'а', 'но', 'или', 'что', 'как', 'где', 'когда', 'который', 
+                                           'the', 'a', 'an', 'and', 'or', 'but', 'not', 'that', 'which', 'what']
+                    text_lower = text.lower().strip()
+                    last_word = text_lower.split()[-1] if text_lower.split() else ''
+                    appears_incomplete = (not text_ends_properly and 
+                                         (last_word in incomplete_indicators or len(last_word) < 3))
+                    
+                    # If text is incomplete, try to merge with next segment(s)
+                    # i is 1-based from enumerate(segments, 1), so current segment is at index i-1
+                    # Next segment would be at index i (if it exists)
+                    if (not text_ends_properly or appears_incomplete) and i < len(segments):
+                        # Try to merge with next segment(s) - look ahead up to 3 segments to find complete sentence
+                        merged_segments = [text]
+                        merged_indices = []
+                        max_lookahead = min(i + 3, len(segments))  # Look ahead up to 3 segments
+                        
+                        for lookahead in range(i, max_lookahead):
+                            next_segment = segments[lookahead]
+                            
+                            # Skip if already merged
+                            if next_segment.get('_merged', False):
+                                break
+                            
+                            next_text = next_segment.get('translated_text' if is_translated else 'text', '').strip()
+                            if not next_text:
+                                break
+                            
+                            # Clean next text
+                            next_text = re.sub(r'\s+', ' ', next_text).strip()
+                            
+                            # Check if merging makes sense
+                            merged_text = ' '.join(merged_segments + [next_text]).strip()
+                            merged_length = len(merged_text)
+                            
+                            # Check if merged text ends properly
+                            merged_ends_properly = any(merged_text.rstrip().endswith(ending) for ending in sentence_endings)
+                            
+                            # Always merge if:
+                            # 1. Merged text is complete (ends with punctuation) and reasonable length (< 250 chars), OR
+                            # 2. Still incomplete but reasonable length (< 250 chars) - keep merging to find completion
+                            should_merge = (merged_length < 250)
+                            
+                            if should_merge:
+                                merged_segments.append(next_text)
+                                merged_indices.append(lookahead)
+                                
+                                # If we got a complete sentence, stop looking ahead
+                                if merged_ends_properly:
+                                    break
+                            else:
+                                # Too long, stop merging
+                                break
+                        
+                        # If we merged any segments, update text and timing
+                        if merged_indices:
+                            text = ' '.join(merged_segments).strip()
+                            # Extend end_time to include all merged segments
+                            last_merged_idx = merged_indices[-1]
+                            last_merged_segment = segments[last_merged_idx]
+                            next_end_time = last_merged_segment.get('end', end_time)
+                            if isinstance(next_end_time, (int, float)) and next_end_time > end_time:
+                                end_time = next_end_time
+                                logger.debug(f"Merged incomplete segment {i} with {len(merged_indices)} next segment(s): '{text[:60]}...'")
+                            
+                            # Mark all merged segments to skip
+                            for merged_idx in merged_indices:
+                                segments[merged_idx]['_merged'] = True
+                        elif not text_ends_properly:
+                            # Couldn't merge, but ensure we have enough time to read incomplete sentence
+                            logger.debug(f"Segment {i} appears incomplete (ends with '{text[-15:]}'), couldn't merge with next")
+                    
+                    # Calculate minimum display duration based on reading speed
+                    # Standard reading speed: ~15-20 characters per second, ~3-4 words per second
+                    # Use 10 characters/second for comfortable reading (slower, more generous pace)
+                    char_count = len(text)
+                    word_count = len(text.split())
+                    
+                    # Calculate minimum display time: max of:
+                    # 1. Time to read text (10 chars/sec or 2.0 words/sec - more generous)
+                    # 2. Minimum 2.0 seconds for short text (increased from 1.5s)
+                    min_duration_from_text = max(
+                        char_count / 10.0,  # Characters per second (slower, more readable)
+                        word_count / 2.0,   # Words per second (slower, more readable)
+                        2.0                 # Minimum 2.0 seconds for short text
+                    )
+                    
+                    original_duration = end_time - start_time
+                    
+                    # Check next segment's start time to avoid overlap
+                    # i is 1-based from enumerate(segments, 1), so current segment is segments[i-1]
+                    # Next segment would be segments[i] if it exists
+                    next_segment_start = None
+                    if i < len(segments):  # Check if next segment exists
+                        next_segment = segments[i]  # Next segment (i is 1-based, segments[i] is the next one)
+                        next_segment_start = next_segment.get('start')
+                    
+                    # Extend end_time if needed to give enough reading time
+                    # Add 1.0 second padding for comfortable reading (increased from 0.5s)
+                    required_duration = min_duration_from_text + 1.0
+                    max_end_time = end_time
+                    
+                    # Don't extend beyond next segment's start (leave 0.1s gap)
+                    if next_segment_start and isinstance(next_segment_start, (int, float)):
+                        max_end_time = next_segment_start - 0.1
+                    
+                    if original_duration < required_duration:
+                        new_end_time = start_time + required_duration
+                        # Don't extend beyond next segment
+                        if next_segment_start and new_end_time > max_end_time:
+                            new_end_time = max_end_time
+                            logger.debug(f"Subtitle {i} extended but limited by next segment: {original_duration:.2f}s -> {new_end_time - start_time:.2f}s (text: {char_count} chars)")
+                        else:
+                            logger.debug(f"Extended subtitle {i} duration: {original_duration:.2f}s -> {required_duration:.2f}s (text: {char_count} chars, {word_count} words)")
+                        end_time = new_end_time
+                    
+                    # Convert to SRT time format (HH:MM:SS,mmm)
+                    start_srt = self._seconds_to_srt_time(start_time)
+                    end_srt = self._seconds_to_srt_time(end_time)
+                    
+                    # Format SRT entry
+                    srt_entry = f"{i}\n{start_srt} --> {end_srt}\n{text}\n\n"
+                    srt_content.append(srt_entry)
+                    valid_segments += 1
+                    
+                except Exception as segment_error:
+                    logger.warning(f"Error processing segment {i}: {segment_error}")
                     continue
-                
-                # Format SRT entry
-                srt_entry = f"{i}\n{start_srt} --> {end_srt}\n{text}\n\n"
-                srt_content.append(srt_entry)
+            
+            # Validate we have content to write
+            if not srt_content:
+                error_msg = "No valid segments to export to SRT file"
+                logger.error(error_msg)
+                structured_logger.log_stage_error("srt_export", error_msg, chunk_id)
+                return False
             
             # Write SRT file
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.writelines(srt_content)
-            
-            structured_logger.log_stage_complete("srt_export", chunk_id, 0)
-            logger.info(f"Exported SRT file: {output_path} ({len(srt_content)} segments)")
-            
-            return True
+            try:
+                with open(output_path, 'w', encoding='utf-8') as f:
+                    f.writelines(srt_content)
+                
+                # Verify file was created and has content
+                if not output_path.exists():
+                    error_msg = f"SRT file was not created at {output_path}"
+                    logger.error(error_msg)
+                    structured_logger.log_stage_error("srt_export", error_msg, chunk_id)
+                    return False
+                
+                file_size = output_path.stat().st_size
+                if file_size == 0:
+                    error_msg = f"SRT file is empty at {output_path}"
+                    logger.error(error_msg)
+                    structured_logger.log_stage_error("srt_export", error_msg, chunk_id)
+                    return False
+                
+                structured_logger.log_stage_complete("srt_export", chunk_id, 0)
+                logger.info(f"Exported SRT file: {output_path} ({valid_segments}/{len(segments)} valid segments, {file_size} bytes)")
+                
+                return True
+                
+            except IOError as io_error:
+                error_msg = f"Failed to write SRT file to {output_path}: {io_error}"
+                logger.error(error_msg)
+                structured_logger.log_stage_error("srt_export", error_msg, chunk_id)
+                return False
             
         except Exception as e:
-            structured_logger.log_stage_error("srt_export", str(e), chunk_id)
-            logger.error(f"SRT export failed: {e}")
+            error_msg = f"SRT export failed for {output_path}: {e}"
+            if chunk_id:
+                structured_logger.log_stage_error("srt_export", error_msg, chunk_id)
+            logger.error(error_msg, exc_info=True)
             return False
     
     def _seconds_to_srt_time(self, seconds: float) -> str:
@@ -2551,10 +3724,26 @@ class CompliantVideoTranslationPipeline:
                 all_translations = [('helsinki', helsinki_translation)] + additional_translations
                 best_translation = self._vote_best_translation(all_translations, text)
                 logger.info(f"Quality enhancement: selected from {len(all_translations)} models")
+                
+                # Validate final translation length
+                original_length = len(text)
+                final_length = len(best_translation)
+                length_ratio = final_length / original_length if original_length > 0 else 1.0
+                if length_ratio > 1.5:
+                    logger.warning(f"⚠️  Final Armenian translation is {length_ratio:.2f}x longer than original (original: {original_length} chars, translated: {final_length} chars). This may indicate extra words.")
+                
                 return best_translation
             else:
                 # No additional models available, use Helsinki-NLP result
                 logger.info("Using Helsinki-NLP translation (no additional models available)")
+                
+                # Validate Helsinki-NLP translation length
+                original_length = len(text)
+                final_length = len(helsinki_translation)
+                length_ratio = final_length / original_length if original_length > 0 else 1.0
+                if length_ratio > 1.5:
+                    logger.warning(f"⚠️  Helsinki-NLP Armenian translation is {length_ratio:.2f}x longer than original (original: {original_length} chars, translated: {final_length} chars). This may indicate extra words.")
+                
                 return helsinki_translation
             
         except Exception as e:
@@ -2606,16 +3795,17 @@ class CompliantVideoTranslationPipeline:
                 
                 with torch.no_grad():
                     generate_kwargs = {
-                        'max_length': 512,
+                        'max_length': 256,  # Reduced from 512 to match other languages and prevent extra words
                         'num_beams': 8,
                         'early_stopping': True,
                         'do_sample': True,
-                        'temperature': 0.4,
+                        'temperature': 0.2,  # Reduced from 0.4 for more deterministic, accurate translations
                         'top_p': 0.95,
                         'top_k': 50,
-                        'repetition_penalty': 1.2,
-                        'length_penalty': 1.0,
+                        'repetition_penalty': 1.4,  # Increased from 1.2 to prevent word repetition
+                        'length_penalty': 0.9,  # Reduced from 1.0 to discourage extra length
                         'no_repeat_ngram_size': 2,
+                        'min_length': 0,  # No minimum length constraint to prevent forced extra words
                     }
                     
                     # Add bad_words_ids if available and not empty
@@ -2627,7 +3817,18 @@ class CompliantVideoTranslationPipeline:
                 translated = tokenizer.decode(outputs[0], skip_special_tokens=True)
                 translated_sentences.append(translated.strip())
             
-            return ' '.join(translated_sentences)
+            translated_text = ' '.join(translated_sentences)
+            
+            # Validate translation length for Armenian
+            original_length = len(text)
+            translated_length = len(translated_text)
+            length_ratio = translated_length / original_length if original_length > 0 else 1.0
+            if length_ratio > 1.5:
+                logger.warning(f"⚠️  Armenian translation is {length_ratio:.2f}x longer than original (original: {original_length} chars, translated: {translated_length} chars). This may indicate extra words.")
+            elif length_ratio > 1.2:
+                logger.info(f"Armenian translation is {length_ratio:.2f}x longer than original (original: {original_length} chars, translated: {translated_length} chars)")
+            
+            return translated_text
             
         except Exception as e:
             logger.error(f"Helsinki-NLP translation failed: {e}")

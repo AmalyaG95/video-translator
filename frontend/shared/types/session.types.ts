@@ -35,6 +35,19 @@ export type ProcessingSession = {
   currentChunk?: number;
   totalChunks?: number;
   duration?: number;
+  
+  // Detailed progress fields (from backend)
+  segments_processed?: number;
+  current_time?: number;
+  current_time_formatted?: string;
+  total_duration?: number;
+  total_duration_formatted?: string;
+  progress_percent?: number;
+  elapsed_time?: number;
+  stage?: string;
+  stage_number?: number;
+  total_stages?: number;
+  stage_progress_percent?: number;
 
   // File metadata
   metadata?: VideoMetadata;
@@ -50,7 +63,8 @@ export type ProcessingSession = {
       voiceQuality: number;
       translationQuality: string;
     };
-    processingTime?: string;
+    processingTime?: string | number;
+    processingTimeSeconds?: number;
     outputSize?: number;
     segments?: Array<{
       id: string;
@@ -66,6 +80,19 @@ export type ProcessingSession = {
   createdAt?: Date;
   updatedAt?: Date;
   startedAt?: Date;
+  completedAt?: Date;
+
+  // Logs for real-time display
+  logs?: Array<{
+    id: string;
+    timestamp: string;
+    level: "info" | "warning" | "error" | "debug" | "success";
+    stage: string;
+    message: string;
+    chunkId?: string;
+    sessionId?: string;
+    data?: any;
+  }>;
 };
 
 export type HardwareInfo = {
